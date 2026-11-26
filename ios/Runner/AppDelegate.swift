@@ -47,6 +47,20 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     channel.setMethodCallHandler { [weak self] call, result in
       self?.handle(call, result: result)
     }
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleDidBecomeActive),
+      name: UIApplication.didBecomeActiveNotification,
+      object: nil
+    )
+  }
+
+  /// 从后台回前台时恢复取景，避免纹理停在最后一帧。
+  @objc private func handleDidBecomeActive() {
+    sessionQueue.async { [weak self] in
+      guard let self = self, self.isConfigured else { return }
+      self.startIfNeeded()
+    }
   }
 
   // MARK: - FlutterTexture

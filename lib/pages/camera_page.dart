@@ -23,7 +23,8 @@ class CameraPage extends StatefulWidget {
   State<CameraPage> createState() => _CameraPageState();
 }
 
-class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
+class _CameraPageState extends State<CameraPage>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late final CameraService _camera =
       widget.camera ?? CameraService(forceDemo: widget.demo);
 
@@ -44,13 +45,24 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _bootstrap();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _alignTimer?.cancel();
     super.dispose();
+  }
+
+  /// 从系统设置授权后回到前台，重新初始化一次相机。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed &&
+        _status == CameraStatus.permissionDenied) {
+      _bootstrap();
+    }
   }
 
   Future<void> _bootstrap() async {
