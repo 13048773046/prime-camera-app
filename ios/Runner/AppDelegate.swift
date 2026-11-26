@@ -642,7 +642,12 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     guard let newInput = try? AVCaptureDeviceInput(device: device) else { return false }
     let oldInput = currentInput
     let oldDevice = currentDevice
+    let oldPosition = currentPosition
+    let targetPosition = position ?? currentPosition
     session.beginConfiguration()
+    // 先按目标镜头收窄高分辨率拍照能力，避免超广角/前置在切输入时被旧的
+    // high-resolution 配置挡住，导致 0.5× 看似选中却切不过去。
+    updatePhotoOutputCapabilities(for: device, position: targetPosition)
     if let oldInput = oldInput, session.inputs.contains(where: { $0 === oldInput }) {
       session.removeInput(oldInput)
     }
@@ -676,6 +681,9 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       if !restored {
         currentInput = nil
         currentDevice = nil
+      }
+      if let oldDevice = oldDevice {
+        updatePhotoOutputCapabilities(for: oldDevice, position: oldPosition)
       }
     }
     session.commitConfiguration()
