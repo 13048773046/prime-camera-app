@@ -110,6 +110,11 @@ class LiveComposer {
       hint = '镜头抬高一点';
       reasons = const ['头顶快贴边了', '给发梢留点白'];
       action = '抬机位';
+    } else if ((box[0] + box[2] / 2 - 0.5).abs() > 0.17) {
+      final toLeft = box[0] + box[2] / 2 < 0.5;
+      hint = toLeft ? '手机往左带一点，把人物放进环' : '手机往右带一点，把人物放进环';
+      reasons = const ['主体还没进瞄准环', '跟着环的方向微移'];
+      action = toLeft ? '左移' : '右移';
     } else if (roll.abs() > 2.0) {
       hint = '手机回正，看住水平线';
       reasons = ['地平线有点歪', '慢慢转正手机'];

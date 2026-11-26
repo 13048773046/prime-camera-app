@@ -53,6 +53,15 @@ void main() {
     expect(guide.hint, '镜头降到胸口');
   });
 
+  test('人物偏左时提示把手机往左带', () {
+    final guide = composer.compose(
+      frame(box: const [0.08, 0.10, 0.30, 0.60], face: const [0.18, 0.12, 0.09, 0.16]),
+      zoom: 1,
+    );
+    expect(guide.hint, contains('往左带'));
+    expect(guide.actionLabel, '左移');
+  });
+
   test('水平歪了提示回正', () {
     final guide = composer.compose(
       frame(box: const [0.3, 0.08, 0.4, 0.62], face: const [0.46, 0.12, 0.09, 0.20], roll: 4),
