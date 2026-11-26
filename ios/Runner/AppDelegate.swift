@@ -65,6 +65,12 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       name: UIApplication.didBecomeActiveNotification,
       object: nil
     )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleWillResignActive),
+      name: UIApplication.willResignActiveNotification,
+      object: nil
+    )
     startMotionTracking()
   }
 
@@ -90,11 +96,21 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     return (rollDegrees, pitchDegrees)
   }
 
-  /// 从后台回前台时恢复取景，避免纹理停在最后一帧。
+  /// 回前台强制重启一次取景，避免系统挂起后纹理停在最后一帧。
   @objc private func handleDidBecomeActive() {
     sessionQueue.async { [weak self] in
       guard let self = self, self.isConfigured else { return }
+      if self.isRunning {
+        self.session.stopRunning()
+        self.isRunning = false
+      }
       self.startIfNeeded()
+    }
+  }
+
+  @objc private func handleWillResignActive() {
+    sessionQueue.async { [weak self] in
+      self?.stopIfNeeded()
     }
   }
 
