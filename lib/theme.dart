@@ -10,6 +10,7 @@ class PrimeTokens {
   static const Color nearWhite = Color(0xFFF7F5F0);
   static const Color red = Color(0xFFE8484F);
   static const Color amber = Color(0xFFE8A24F);
+  static const Color line = Color(0x2417332B);
 
   static ThemeData theme() {
     final base = ThemeData(
