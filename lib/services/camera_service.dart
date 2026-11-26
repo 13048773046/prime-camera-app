@@ -13,8 +13,8 @@ import 'guidance.dart';
 /// 未接入内核（Web 预览、单元测试）时返回 demo 状态，页面显示演示取景，不伪装成实时画面。
 class CameraService {
   CameraService({MethodChannel? channel, bool? forceDemo})
-      : _channel = channel ?? const MethodChannel('prime/camera'),
-        _forceDemo = forceDemo ?? false {
+    : _channel = channel ?? const MethodChannel('prime/camera'),
+      _forceDemo = forceDemo ?? false {
     _channel.setMethodCallHandler(_handleNativeCall);
   }
 
@@ -25,19 +25,19 @@ class CameraService {
 
   bool _initialized = false;
   int? _textureId;
+  bool _ultraWide = false;
 
   int? get textureId => _textureId;
   bool get isReady => _initialized && _textureId != null;
+  bool get ultraWideAvailable => _ultraWide;
 
-  /// 实时构图流：原生 5fps 左右推送，空结果表示画面里没有人。
+  /// 实时构图流：原生约 5–6fps 推送，空结果表示画面里没有找到主体。
   Stream<GuidanceFrame> get guidanceStream => _guidance.stream;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     if (call.method == 'guidance' && call.arguments is Map) {
       _guidance.add(
-        GuidanceFrame.fromMap(
-          Map<String, dynamic>.from(call.arguments as Map),
-        ),
+        GuidanceFrame.fromMap(Map<String, dynamic>.from(call.arguments as Map)),
       );
     }
     return null;
@@ -45,20 +45,30 @@ class CameraService {
 
   Future<CameraInitResult> initialize() async {
     if (_initialized) {
-      return CameraInitResult(status: CameraStatus.ready, textureId: _textureId);
+      return CameraInitResult(
+        status: CameraStatus.ready,
+        textureId: _textureId,
+      );
     }
     if (_forceDemo) {
       return const CameraInitResult(status: CameraStatus.demo, message: '演示取景');
     }
     try {
-      final result = await _channel.invokeMapMethod<String, dynamic>('initialize');
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'initialize',
+      );
       final status = result?['status']?.toString() ?? 'unavailable';
       final id = (result?['textureId'] as num?)?.toInt();
+      _ultraWide = result?['ultraWide'] == true;
       switch (status) {
         case 'ready':
           _initialized = true;
           _textureId = id;
-          return CameraInitResult(status: CameraStatus.ready, textureId: id);
+          return CameraInitResult(
+            status: CameraStatus.ready,
+            textureId: id,
+            ultraWide: _ultraWide,
+          );
         case 'denied':
           return const CameraInitResult(
             status: CameraStatus.permissionDenied,
@@ -70,7 +80,11 @@ class CameraService {
             message: '系统限制了相机访问',
           );
         case 'demo':
-          return CameraInitResult(status: CameraStatus.demo, textureId: id);
+          return CameraInitResult(
+            status: CameraStatus.demo,
+            textureId: id,
+            ultraWide: true,
+          );
         default:
           return CameraInitResult(
             status: CameraStatus.unavailable,
@@ -91,11 +105,13 @@ class CameraService {
   Future<bool> requestPermission() async {
     try {
       // 原生侧申请权限后直接配置会话，返回与 initialize 相同的结果字典。
-      final result =
-          await _channel.invokeMapMethod<String, dynamic>('requestPermission');
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'requestPermission',
+      );
       if (result?['status']?.toString() == 'ready') {
         _initialized = true;
         _textureId = (result?['textureId'] as num?)?.toInt();
+        _ultraWide = result?['ultraWide'] == true;
         return true;
       }
       return false;
@@ -119,8 +135,10 @@ class CameraService {
   /// 返回镜头实际采用的倍率；无超广角/受限机型会回落到最近可用的倍率。
   Future<double?> setZoom(double zoom) async {
     try {
-      final result =
-          await _channel.invokeMapMethod<String, dynamic>('setZoom', {'zoom': zoom});
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'setZoom',
+        {'zoom': zoom},
+      );
       return (result?['zoom'] as num?)?.toDouble();
     } on MissingPluginException {
       // 演示模式。
@@ -133,7 +151,9 @@ class CameraService {
 
   Future<double?> switchCamera() async {
     try {
-      final result = await _channel.invokeMapMethod<String, dynamic>('switchCamera');
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'switchCamera',
+      );
       return (result?['zoom'] as num?)?.toDouble();
     } on MissingPluginException {
       // 演示模式。
@@ -146,10 +166,9 @@ class CameraService {
 
   Future<String?> takePhoto({bool flash = false}) async {
     try {
-      return await _channel.invokeMethod<String>(
-        'takePhoto',
-        <String, dynamic>{'flash': flash},
-      );
+      return await _channel.invokeMethod<String>('takePhoto', <String, dynamic>{
+        'flash': flash,
+      });
     } on MissingPluginException {
       return null;
     } on PlatformException {
@@ -159,7 +178,9 @@ class CameraService {
 
   Future<bool> saveToAlbum(String? path, {String? bytes}) async {
     try {
-      final ok = await _channel.invokeMethod<bool>('saveToAlbum', {'path': ?path});
+      final ok = await _channel.invokeMethod<bool>('saveToAlbum', {
+        'path': ?path,
+      });
       return ok ?? false;
     } on MissingPluginException {
       return false;
@@ -183,9 +204,15 @@ class CameraService {
 enum CameraStatus { ready, demo, permissionDenied, unavailable }
 
 class CameraInitResult {
-  const CameraInitResult({required this.status, this.textureId, this.message});
+  const CameraInitResult({
+    required this.status,
+    this.textureId,
+    this.message,
+    this.ultraWide = false,
+  });
 
   final CameraStatus status;
   final int? textureId;
   final String? message;
+  final bool ultraWide;
 }

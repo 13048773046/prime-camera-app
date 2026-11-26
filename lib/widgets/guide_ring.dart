@@ -2,7 +2,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-
 /// 黑白取景引导层，结构对齐 Doka 的 AR 构图：
 /// 主体四角框 → 中心四角星 → 虚线目标环 → 对齐后的渐变圆角裁切框。
 class GuideOverlay extends StatefulWidget {
@@ -14,6 +13,8 @@ class GuideOverlay extends StatefulWidget {
     this.analyzing = false,
     this.showGrid = false,
     this.confidence = 0.62,
+    this.frameRect,
+    this.subjectLabel = '主体',
   });
 
   final List<double> subjectBox;
@@ -22,6 +23,10 @@ class GuideOverlay extends StatefulWidget {
   final bool analyzing;
   final bool showGrid;
   final double confidence;
+
+  /// 预览画面在屏幕上的可见矩形（BoxFit.cover 会裁掉一部分画幅）。
+  final Rect? frameRect;
+  final String subjectLabel;
 
   @override
   State<GuideOverlay> createState() => _GuideOverlayState();
@@ -57,6 +62,8 @@ class _GuideOverlayState extends State<GuideOverlay>
                 showGrid: widget.showGrid,
                 scan: _scan.value,
                 confidence: widget.confidence,
+                frameRect: widget.frameRect,
+                subjectLabel: widget.subjectLabel,
               ),
             );
           },
@@ -75,6 +82,8 @@ class _GuidePainter extends CustomPainter {
     required this.showGrid,
     required this.scan,
     required this.confidence,
+    required this.frameRect,
+    required this.subjectLabel,
   });
 
   final List<double> subjectBox;
@@ -84,6 +93,8 @@ class _GuidePainter extends CustomPainter {
   final bool showGrid;
   final double scan;
   final double confidence;
+  final Rect? frameRect;
+  final String subjectLabel;
 
   static const List<Offset> _sparkleSpots = [
     Offset(0.09, 0.18),
@@ -128,13 +139,14 @@ class _GuidePainter extends CustomPainter {
     final center = Offset(size.width / 2, size.height / 2);
     _paintCenterMark(canvas, center);
 
+    final sourceRect = frameRect ?? (Offset.zero & size);
     final hasSubject = subjectBox.length == 4;
     if (hasSubject) {
       final rect = Rect.fromLTWH(
-        subjectBox[0] * size.width,
-        subjectBox[1] * size.height,
-        subjectBox[2] * size.width,
-        subjectBox[3] * size.height,
+        sourceRect.left + subjectBox[0] * sourceRect.width,
+        sourceRect.top + subjectBox[1] * sourceRect.height,
+        subjectBox[2] * sourceRect.width,
+        subjectBox[3] * sourceRect.height,
       );
       _paintSubject(canvas, rect, size);
     }
@@ -142,14 +154,13 @@ class _GuidePainter extends CustomPainter {
     final hasTarget = targetBox.length == 4;
     if (hasTarget) {
       final rect = Rect.fromLTWH(
-        targetBox[0] * size.width,
-        targetBox[1] * size.height,
-        targetBox[2] * size.width,
-        targetBox[3] * size.height,
+        sourceRect.left + targetBox[0] * sourceRect.width,
+        sourceRect.top + targetBox[1] * sourceRect.height,
+        targetBox[2] * sourceRect.width,
+        targetBox[3] * sourceRect.height,
       );
       _paintTarget(canvas, size, rect, center);
     }
-
   }
 
   void _paintAnalyzing(Canvas canvas, Size size) {
@@ -184,8 +195,8 @@ class _GuidePainter extends CustomPainter {
       final phase = scan * math.pi * 2 + i * 1.31;
       final pulse = 0.5 + 0.5 * math.sin(phase);
       final opacity = 0.14 + 0.30 * pulse;
-      final radius = (i % 4 == 0 ? 3.8 : 2.5) +
-          pulse * (i % 3 == 0 ? 1.0 : 0.4);
+      final radius =
+          (i % 4 == 0 ? 3.8 : 2.5) + pulse * (i % 3 == 0 ? 1.0 : 0.4);
       _paintSparkle(
         canvas,
         Offset(p.dx * size.width, p.dy * size.height),
@@ -247,9 +258,9 @@ class _GuidePainter extends CustomPainter {
     corner(rect.bottomRight, -1, -1);
 
     final label = TextPainter(
-      text: const TextSpan(
-        text: '主体',
-        style: TextStyle(
+      text: TextSpan(
+        text: subjectLabel,
+        style: const TextStyle(
           fontSize: 9,
           height: 1.1,
           letterSpacing: 1.2,
@@ -270,7 +281,10 @@ class _GuidePainter extends CustomPainter {
       Rect.fromLTWH(tagLeft, tagTop, label.width + 12, label.height + 7),
       const Radius.circular(4),
     );
-    canvas.drawRRect(tagRect, Paint()..color = Colors.black.withValues(alpha: 0.72));
+    canvas.drawRRect(
+      tagRect,
+      Paint()..color = Colors.black.withValues(alpha: 0.72),
+    );
     canvas.drawRRect(
       tagRect,
       Paint()
@@ -493,5 +507,7 @@ class _GuidePainter extends CustomPainter {
       oldDelegate.analyzing != analyzing ||
       oldDelegate.targetBox != targetBox ||
       oldDelegate.subjectBox != subjectBox ||
-      oldDelegate.showGrid != showGrid;
+      oldDelegate.showGrid != showGrid ||
+      oldDelegate.frameRect != frameRect ||
+      oldDelegate.subjectLabel != subjectLabel;
 }

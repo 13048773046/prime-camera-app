@@ -260,6 +260,8 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
             "status": "ready",
             "textureId": self.textureId,
             "zoom": self.currentZoom,
+            "lens": PrimeCameraHost.lensName(self.currentDevice),
+            "ultraWide": PrimeCameraHost.makeUltraWideDevice() != nil,
           ])
         }
       } catch {
@@ -290,6 +292,21 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private static func makeUltraWideDevice() -> AVCaptureDevice? {
     guard #available(iOS 13.0, *) else { return nil }
     return AVCaptureDevice.default(.builtInUltraWideCamera, for: .video, position: .back)
+  }
+
+  private static func lensName(_ device: AVCaptureDevice?) -> String {
+    guard let device = device else { return "none" }
+    if #available(iOS 13.0, *) {
+      switch device.deviceType {
+      case .builtInUltraWideCamera:
+        return "ultraWide"
+      case .builtInTelephotoCamera:
+        return "telephoto"
+      default:
+        return "wide"
+      }
+    }
+    return "wide"
   }
 
   /// 0.5× 需要超广角；虚拟三摄的 videoZoomFactor 下限通常是 1.0，
@@ -329,7 +346,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       }
     }
 
-    // 固定 1080p 16:9 视频流：预览纹理尺寸稳定，Vision 坐标与 3:4 裁切才能一一对应。
+    // 固定 1080p 16:9 视频流：预览纹理尺寸稳定，Vision 坐标按完整 9:16 画幅映射。
     if session.canSetSessionPreset(.hd1920x1080) {
       session.sessionPreset = .hd1920x1080
     } else {
@@ -379,13 +396,34 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       )
     }
     session.addOutput(photoOutput)
-    photoOutput.isHighResolutionCaptureEnabled = true
+    updatePhotoOutputCapabilities(for: device, position: position)
 
     isConfigured = true
     applyConnectionSettings()
     currentZoom = setZoomFactor(on: device, logicalZoom: zoom)
     session.commitConfiguration()
     didCommit = true
+  }
+
+  /// 超广角和前置通常不支持高分辨率静态照片；在超广角上强行打开会让
+  /// 0.5× 拍照偶发失败，这里按设备能力收窄，保证快门始终能出片。
+  private func updatePhotoOutputCapabilities(
+    for device: AVCaptureDevice,
+    position: AVCaptureDevice.Position
+  ) {
+    let highResolution: Bool
+    if position == .back {
+      switch device.deviceType {
+      case .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera,
+           .builtInWideAngleCamera:
+        highResolution = true
+      default:
+        highResolution = false
+      }
+    } else {
+      highResolution = false
+    }
+    photoOutput.isHighResolutionCaptureEnabled = highResolution
   }
 
   private func applyConnectionSettings() {
@@ -463,28 +501,42 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     visionLock.unlock()
   }
 
-  /// 在取景流上实时找人：人体框 + 人脸框，结果按 3:4 可见区域归一化后推给 Flutter。
+  /// 在取景流上实时找人/脸，同时找非人像场景的显著区域。
+  /// 坐标按完整 9:16 画幅归一化，页面全屏预览再按 cover 裁切映射。
   private func analyzeFrame(_ pixelBuffer: CVPixelBuffer, roll: Double, pitch: Double) {
     let humanRequest = VNDetectHumanRectanglesRequest()
     humanRequest.upperBodyOnly = false
     let faceRequest = VNDetectFaceRectanglesRequest()
+    let saliencyRequest = VNGenerateAttentionBasedSaliencyImageRequest()
     let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
 
     do {
-      try handler.perform([humanRequest, faceRequest])
+      try handler.perform([humanRequest, faceRequest, saliencyRequest])
       let humans = humanRequest.results ?? []
       let faces = faceRequest.results ?? []
       let human = humans.max { area(of: $0.boundingBox) < area(of: $1.boundingBox) }
       let face = faces.max { area(of: $0.boundingBox) < area(of: $1.boundingBox) }
+      let salientObservation = saliencyRequest.results?.first as? VNSaliencyImageObservation
+      let salient = salientObservation?.salientObjects?.max {
+        area(of: $0.boundingBox) < area(of: $1.boundingBox)
+      }
       sendGuidance(
-        box: human.map { normalizeVisible($0.boundingBox, buffer: pixelBuffer) },
-        face: face.map { normalizeVisible($0.boundingBox, buffer: pixelBuffer) },
+        box: human.map { normalizeFrame($0.boundingBox) },
+        face: face.map { normalizeFrame($0.boundingBox) },
+        saliency: salient.map { normalizeFrame($0.boundingBox) },
         roll: roll,
         pitch: pitch,
         buffer: pixelBuffer
       )
     } catch {
-      sendGuidance(box: nil, face: nil, roll: roll, pitch: pitch, buffer: pixelBuffer)
+      sendGuidance(
+        box: nil,
+        face: nil,
+        saliency: nil,
+        roll: roll,
+        pitch: pitch,
+        buffer: pixelBuffer
+      )
     }
   }
 
@@ -492,27 +544,19 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     rect.width * rect.height
   }
 
-  /// 取景窗固定 3:4。根据实际纹理比例算中间裁切高度，9:16 是 75%，
-  /// 4:3 则是整幅；Vision 坐标随之映射，避免换机型后框上下偏。
-  private func normalizeVisible(_ box: CGRect, buffer: CVPixelBuffer) -> [Double] {
-    let width = CGFloat(CVPixelBufferGetWidth(buffer))
-    let height = CGFloat(CVPixelBufferGetHeight(buffer))
-    var visibleHeight: CGFloat = 0.75
-    if width > 0, height > 0 {
-      visibleHeight = min(1.0, (width * 4.0 / 3.0) / height)
-    }
-    let visible = Double(visibleHeight)
-    let cropTop = (1.0 - visible) / 2.0
+  /// Vision 的 boundingBox 是左下原点；转成 Flutter 左上原点，保留整幅。
+  private func normalizeFrame(_ box: CGRect) -> [Double] {
     let left = max(0, min(1, Double(box.minX)))
     let right = max(0, min(1, Double(box.maxX)))
-    let top = max(0, min(1, (1.0 - Double(box.maxY) - cropTop) / visible))
-    let bottom = max(0, min(1, (1.0 - Double(box.minY) - cropTop) / visible))
+    let top = max(0, min(1, 1.0 - Double(box.maxY)))
+    let bottom = max(0, min(1, 1.0 - Double(box.minY)))
     return [left, top, max(0, right - left), max(0, bottom - top)]
   }
 
   private func sendGuidance(
     box: [Double]?,
     face: [Double]?,
+    saliency: [Double]?,
     roll: Double,
     pitch: Double,
     buffer: CVPixelBuffer
@@ -534,6 +578,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     ]
     if let box = box { payload["box"] = box }
     if let face = face { payload["face"] = face }
+    if let saliency = saliency { payload["saliency"] = saliency }
     DispatchQueue.main.async { [weak self] in
       self?.channel.invokeMethod("guidance", arguments: payload)
     }
@@ -562,6 +607,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
         result([
           "zoom": actual,
           "position": self.currentPosition == .back ? "back" : "front",
+          "lens": PrimeCameraHost.lensName(self.currentDevice),
         ])
       }
     }
@@ -595,6 +641,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   ) -> Bool {
     guard let newInput = try? AVCaptureDeviceInput(device: device) else { return false }
     let oldInput = currentInput
+    let oldDevice = currentDevice
     session.beginConfiguration()
     if let oldInput = oldInput, session.inputs.contains(where: { $0 === oldInput }) {
       session.removeInput(oldInput)
@@ -607,14 +654,32 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       if let position = position {
         currentPosition = position
       }
-    } else if let oldInput = oldInput, session.canAddInput(oldInput) {
-      session.addInput(oldInput)
-      currentInput = oldInput
+      updatePhotoOutputCapabilities(for: device, position: position ?? currentPosition)
+    } else {
+      // 新镜头装不上时优先把旧输入原样装回；旧 input 失效就按旧设备重建。
+      var restored = false
+      if let oldInput = oldInput, session.canAddInput(oldInput) {
+        session.addInput(oldInput)
+        currentInput = oldInput
+        currentDevice = oldDevice
+        restored = true
+      } else if
+        let oldDevice = oldDevice,
+        let fallbackInput = try? AVCaptureDeviceInput(device: oldDevice),
+        session.canAddInput(fallbackInput)
+      {
+        session.addInput(fallbackInput)
+        currentInput = fallbackInput
+        currentDevice = oldDevice
+        restored = true
+      }
+      if !restored {
+        currentInput = nil
+        currentDevice = nil
+      }
     }
     session.commitConfiguration()
-    if added {
-      applyConnectionSettings()
-    }
+    applyConnectionSettings()
     return added
   }
 
@@ -642,6 +707,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
         result([
           "position": newPosition == .back ? "back" : "front",
           "zoom": actual,
+          "lens": PrimeCameraHost.lensName(self.currentDevice),
         ])
       }
     }

@@ -30,12 +30,18 @@ void main() {
     addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
     await tester.pumpWidget(
-      MaterialApp(home: CameraPage(camera: CameraService(channel: channel))),
+      MaterialApp(
+        home: CameraPage(camera: CameraService(channel: channel)),
+      ),
     );
     await tester.pump(const Duration(milliseconds: 300));
-    // 原生 ready 后先显示“分析中”，一秒后才允许口令接管。
-    expect(find.text('正在进行人像构图分析'), findsOneWidget);
+    // 默认是通用场景；切到人像后再接收原生人体框。
+    expect(find.text('正在读取画面构图'), findsOneWidget);
     expect(find.text('请稳住手机，不要移动'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('scene-portrait')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('正在进行人像构图分析'), findsOneWidget);
 
     await tester.pump(const Duration(milliseconds: 1200));
     final codec = const StandardMethodCodec();
@@ -59,7 +65,7 @@ void main() {
 
     expect(find.text('构图已锁定'), findsOneWidget);
     expect(find.text('对齐了 · 可以按快门'), findsOneWidget);
-    expect(find.text('双环重合 · 直接出片'), findsOneWidget);
+    expect(find.text('构图已锁定 · 直接出片'), findsOneWidget);
     expect(find.text('切换构图方案'), findsOneWidget);
   });
 }

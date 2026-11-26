@@ -2,7 +2,31 @@ import 'dart:math' as math;
 
 import 'compose_api.dart';
 
-/// 原生相机每帧推上来的识别结果（坐标已映射到 3:4 可见取景窗）。
+/// 拍摄场景。通用保留给人像以外的一切画面；街景单独用三分/水平线规则。
+enum SceneMode { general, portrait, street }
+
+extension SceneModeX on SceneMode {
+  String get label => switch (this) {
+    SceneMode.general => '通用',
+    SceneMode.portrait => '人像',
+    SceneMode.street => '街景',
+  };
+
+  String get analyzingText => switch (this) {
+    SceneMode.general => '正在读取画面构图',
+    SceneMode.portrait => '正在进行人像构图分析',
+    SceneMode.street => '正在分析街景线条',
+  };
+
+  String get settingText => switch (this) {
+    SceneMode.general => '通用构图 · 全屏',
+    SceneMode.portrait => '人像构图 · 全屏',
+    SceneMode.street => '街景 · 右三分 · 全屏',
+  };
+}
+
+/// 原生相机每帧推上来的识别结果。
+/// 坐标已映射到完整 9:16 取景画幅；页面按全屏 cover 的可见矩形再映射一次。
 class GuidanceFrame {
   const GuidanceFrame({
     required this.roll,
@@ -13,6 +37,7 @@ class GuidanceFrame {
     required this.ts,
     this.box,
     this.face,
+    this.saliency,
   });
 
   final double roll;
@@ -23,6 +48,9 @@ class GuidanceFrame {
   final int ts;
   final List<double>? box;
   final List<double>? face;
+
+  /// 非人像场景的显著主体（建筑、树、招牌、静物等）。
+  final List<double>? saliency;
 
   bool get hasSubject => box != null && box!.length == 4;
 
@@ -42,6 +70,7 @@ class GuidanceFrame {
       ts: (map['ts'] as num? ?? 0).toInt(),
       box: rect(map['box']),
       face: rect(map['face']),
+      saliency: rect(map['saliency']),
     );
   }
 }
@@ -51,7 +80,16 @@ class GuidanceFrame {
 class LiveComposer {
   const LiveComposer();
 
-  ComposeResult compose(GuidanceFrame frame, {required double zoom}) {
+  ComposeResult compose(
+    GuidanceFrame frame, {
+    required double zoom,
+    SceneMode mode = SceneMode.portrait,
+  }) {
+    if (mode == SceneMode.portrait) return _composePortrait(frame, zoom);
+    return _composeScene(frame, zoom: zoom, mode: mode);
+  }
+
+  ComposeResult _composePortrait(GuidanceFrame frame, double zoom) {
     final face = frame.face;
     final roll = frame.roll;
     // 人体框偶尔会漏（人物太近、腿出画），但脸还在；用脸扩一个主体框兜底。
@@ -95,12 +133,16 @@ class LiveComposer {
     if (metricH < farLimit) {
       hint = '再靠近半步，让人物大一点';
       reasons = const ['人物在画面里偏小', '环境占得太多'];
-      final delta = distance == null ? null : math.max(0.2, (distance - 1.5).abs());
+      final delta = distance == null
+          ? null
+          : math.max(0.2, (distance - 1.5).abs());
       action = delta == null ? '走近' : '再近\n${delta.toStringAsFixed(1)}m';
     } else if (metricH > nearLimit) {
       hint = '再退半步，给头顶留点空间';
       reasons = const ['人物有点太满', '边缘容易切到'];
-      final delta = distance == null ? null : math.max(0.2, (distance - 1.5).abs());
+      final delta = distance == null
+          ? null
+          : math.max(0.2, (distance - 1.5).abs());
       action = delta == null ? '退后' : '再退\n${delta.toStringAsFixed(1)}m';
     } else if (metricTop > topHigh) {
       hint = '镜头降到胸口';
@@ -133,11 +175,16 @@ class LiveComposer {
     final progress = aligned
         ? 1.0
         : (0.15 +
-                0.85 *
-                    (0.55 * _near(metricH, targetH, (nearLimit - farLimit) * 0.55) +
-                        0.25 * _near(metricTop, topTarget, 0.14) +
-                        0.20 * _near(roll, 0, 3.0)))
-            .clamp(0.15, 0.96);
+                  0.85 *
+                      (0.55 *
+                              _near(
+                                metricH,
+                                targetH,
+                                (nearLimit - farLimit) * 0.55,
+                              ) +
+                          0.25 * _near(metricTop, topTarget, 0.14) +
+                          0.20 * _near(roll, 0, 3.0)))
+              .clamp(0.15, 0.96);
 
     return ComposeResult(
       subject: hasFace ? 'face' : 'person',
@@ -152,6 +199,115 @@ class LiveComposer {
       actionLabel: action,
       progress: progress,
       distanceMeters: distance,
+    );
+  }
+
+  /// 通用/街景不依赖人脸：优先使用 Vision 的显著区域。
+  ComposeResult _composeScene(
+    GuidanceFrame frame, {
+    required double zoom,
+    required SceneMode mode,
+  }) {
+    final box = frame.saliency ?? frame.box;
+    final roll = frame.roll;
+    final isStreet = mode == SceneMode.street;
+    final targetBox = isStreet
+        ? const [0.54, 0.22, 0.24, 0.30]
+        : const [0.34, 0.30, 0.32, 0.32];
+    final targetCx = targetBox[0] + targetBox[2] / 2;
+    final targetCy = targetBox[1] + targetBox[3] / 2;
+
+    if (box == null || box.length != 4) {
+      return ComposeResult(
+        subject: 'scene',
+        subjectBox: const [],
+        targetBox: targetBox,
+        targetZoom: zoom,
+        horizonFix: roll,
+        hint: isStreet ? '找街道消失点，放进右边瞄准环' : '把画面重点放进中心环',
+        reasons: isStreet
+            ? const ['还没有找到街道重点', '先找消失点或最亮的地方']
+            : const ['还没有找到画面重点', '先找主体或最亮的地方'],
+        confidence: 0,
+        source: 'vision',
+        actionLabel: '找重点',
+        distanceMeters: null,
+        progress: 0.12,
+      );
+    }
+
+    final cx = box[0] + box[2] / 2;
+    final cy = box[1] + box[3] / 2;
+    String hint;
+    List<String> reasons;
+    String action;
+    bool aligned = false;
+
+    if (roll.abs() > 2.0) {
+      hint = '手机回正，让街道线保持水平';
+      reasons = ['地平线有点歪', '先把手机转正'];
+      action = '回正\n${roll.abs().toStringAsFixed(0)}°';
+    } else if (isStreet && cx < 0.50) {
+      hint = '手机往右带，把消失点放进右环';
+      reasons = const ['街道重点还没到右三分', '沿着街道方向微移'];
+      action = '右移';
+    } else if (isStreet && cx > 0.84) {
+      hint = '手机往左带，给街道留一点前景';
+      reasons = const ['重点太靠右', '左侧需要街道环境'];
+      action = '左移';
+    } else if (!isStreet && cx < 0.32) {
+      hint = '手机往左带，把重点移进中心环';
+      reasons = const ['画面重点偏右', '向中心微移'];
+      action = '左移';
+    } else if (!isStreet && cx > 0.68) {
+      hint = '手机往右带，把重点移进中心环';
+      reasons = const ['画面重点偏左', '向中心微移'];
+      action = '右移';
+    } else if (box[1] > (isStreet ? 0.50 : 0.58)) {
+      hint = '镜头抬高一点，多收一点环境';
+      reasons = const ['主体偏低', '上方环境占比不够'];
+      action = '抬机位';
+    } else if (box[3] < 0.18) {
+      hint = '再走近一点，让重点更清楚';
+      reasons = const ['画面重点偏小', '环境占得有点多'];
+      action = '走近';
+    } else if (roll.abs() > 1.2) {
+      hint = '就快正了，再回一点点';
+      reasons = const ['水平差一点', '稳住这一下'];
+      action = '微调';
+    } else {
+      aligned = true;
+      hint = isStreet ? '可以拍了，等一束光' : '可以拍了，画面稳了';
+      reasons = isStreet
+          ? const ['消失点在右三分', '街道线已水平']
+          : const ['重点在画面中心', '机位水平'];
+      action = '已对齐';
+    }
+
+    final centerScore = _near(cx, targetCx, isStreet ? 0.30 : 0.30);
+    final verticalScore = _near(cy, targetCy, 0.30);
+    final rollScore = _near(roll, 0, 3.0);
+    final progress = aligned
+        ? 1.0
+        : (0.15 +
+                  0.85 *
+                      (0.5 * centerScore +
+                          0.3 * verticalScore +
+                          0.2 * rollScore))
+              .clamp(0.15, 0.96);
+
+    return ComposeResult(
+      subject: 'scene',
+      subjectBox: box,
+      targetBox: targetBox,
+      targetZoom: zoom,
+      horizonFix: roll,
+      hint: hint,
+      reasons: reasons,
+      confidence: 0.76,
+      source: 'vision',
+      actionLabel: action,
+      progress: progress,
     );
   }
 

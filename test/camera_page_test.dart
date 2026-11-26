@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:prime_camera/pages/camera_page.dart';
 import 'package:prime_camera/services/camera_service.dart';
+import 'package:prime_camera/widgets/guide_ring.dart';
 
 /// 演示模式：不依赖原生相机，验证黑白取景页的排版与状态。
 CameraService _demoCamera() => CameraService(forceDemo: true);
@@ -19,11 +20,23 @@ void main() {
 
     expect(find.text('定焦'), findsOneWidget);
     expect(find.text('PRIME'), findsOneWidget);
-    expect(find.text('正在进行人像构图分析'), findsOneWidget);
+    expect(find.text('正在读取画面构图'), findsOneWidget);
     expect(find.text('请稳住手机，不要移动'), findsOneWidget);
+    expect(find.text('通用'), findsOneWidget);
+    expect(find.text('人像'), findsOneWidget);
+    expect(find.text('街景'), findsOneWidget);
     expect(find.byKey(const ValueKey('shutter')), findsOneWidget);
+    // 取景层必须铺满屏幕，而不是 3:4 小框。
+    expect(tester.getSize(find.byType(GuideOverlay)), const Size(390, 844));
 
-    // 分析结束后出现拍法、切方案入口和口令。
+    // 分析结束后出现通用口令；人像拍法入口只会在人像模式出现。
+    await tester.pump(const Duration(milliseconds: 1800));
+    expect(find.text('把画面重点放进中心环'), findsOneWidget);
+    expect(find.text('通用构图 · 全屏'), findsOneWidget);
+    expect(find.text('切换构图方案'), findsNothing);
+
+    // 切到人像后恢复全身拍法与口令。
+    await tester.tap(find.byKey(const ValueKey('scene-portrait')));
     await tester.pump(const Duration(milliseconds: 1800));
     expect(find.text('后退半步，镜头降到胸口'), findsOneWidget);
     expect(find.text('切换构图方案'), findsOneWidget);

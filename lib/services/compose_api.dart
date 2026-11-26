@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
 class ComposeResult {
@@ -31,8 +32,9 @@ class ComposeResult {
   });
 
   factory ComposeResult.fromJson(Map<String, dynamic> json) {
-    List<double> box(String key) =>
-        (json[key] as List? ?? const []).map((e) => (e as num).toDouble()).toList();
+    List<double> box(String key) => (json[key] as List? ?? const [])
+        .map((e) => (e as num).toDouble())
+        .toList();
     return ComposeResult(
       subject: json['subject']?.toString() ?? 'unknown',
       subjectBox: box('subject_box'),
@@ -40,7 +42,9 @@ class ComposeResult {
       targetZoom: (json['target_zoom'] as num? ?? 1).toDouble(),
       horizonFix: (json['horizon_fix'] as num? ?? 0).toDouble(),
       hint: json['hint']?.toString() ?? '把主体放到画面中间',
-      reasons: (json['reasons'] as List? ?? const []).map((e) => e.toString()).toList(),
+      reasons: (json['reasons'] as List? ?? const [])
+          .map((e) => e.toString())
+          .toList(),
       confidence: (json['confidence'] as num? ?? 0).toDouble(),
       source: json['source']?.toString() ?? 'fallback',
     );
@@ -67,7 +71,7 @@ class ComposeApi {
           body: jsonEncode({
             'image': imageBase64,
             'mode': mode,
-            'device': {'lens': 'wide', 'zoom': zoom, 'aspect': '3:4'},
+            'device': {'lens': 'wide', 'zoom': zoom, 'aspect': '9:16'},
             'tilt': tilt,
             'roll': roll,
           }),
@@ -76,6 +80,8 @@ class ComposeApi {
     if (response.statusCode != 200) {
       throw StateError('compose failed: ${response.statusCode}');
     }
-    return ComposeResult.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return ComposeResult.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
   }
 }
