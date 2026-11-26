@@ -1,43 +1,157 @@
-import 'dart:async';
 import 'package:flutter/services.dart';
 
-/// 相机插件占位接口。
+/// 原生相机内核的 Dart 端。
 ///
-/// 当前 MVP 壳先通过 MethodChannel 与原生侧通信；iOS 原生相机内核在 Mac/Xcode 环境接入。
-/// 未接入真机内核时，页面展示深色取景窗占位和权限/状态提示，不伪装成真实预览。
+/// iOS 侧通过 `prime/camera` MethodChannel 暴露：
+/// initialize / requestPermission / openSettings / setZoom / switchCamera /
+/// takePhoto / saveToAlbum / share。
+/// 未接入内核（Web 预览、单元测试）时返回 demo 状态，页面显示演示取景，不伪装成实时画面。
 class CameraService {
-  CameraService({MethodChannel? channel})
-      : _channel = channel ?? const MethodChannel('prime/camera');
+  CameraService({MethodChannel? channel, bool? forceDemo})
+      : _channel = channel ?? const MethodChannel('prime/camera'),
+        _forceDemo = forceDemo ?? false;
 
   final MethodChannel _channel;
-  bool _initialized = false;
+  final bool _forceDemo;
 
-  Future<CameraStatus> initialize() async {
-    if (_initialized) return CameraStatus.ready;
+  bool _initialized = false;
+  int? _textureId;
+
+  int? get textureId => _textureId;
+  bool get isReady => _initialized && _textureId != null;
+
+  Future<CameraInitResult> initialize() async {
+    if (_initialized) {
+      return CameraInitResult(status: CameraStatus.ready, textureId: _textureId);
+    }
+    if (_forceDemo) {
+      return const CameraInitResult(status: CameraStatus.demo, message: '演示取景');
+    }
     try {
-      final result = await _channel.invokeMethod<String>('initialize');
-      _initialized = result == 'ready';
-      return _initialized ? CameraStatus.ready : CameraStatus.unavailable;
+      final result = await _channel.invokeMapMethod<String, dynamic>('initialize');
+      final status = result?['status']?.toString() ?? 'unavailable';
+      final id = (result?['textureId'] as num?)?.toInt();
+      switch (status) {
+        case 'ready':
+          _initialized = true;
+          _textureId = id;
+          return CameraInitResult(status: CameraStatus.ready, textureId: id);
+        case 'denied':
+          return const CameraInitResult(
+            status: CameraStatus.permissionDenied,
+            message: '相机权限未开启',
+          );
+        case 'restricted':
+          return const CameraInitResult(
+            status: CameraStatus.permissionDenied,
+            message: '系统限制了相机访问',
+          );
+        case 'demo':
+          return CameraInitResult(status: CameraStatus.demo, textureId: id);
+        default:
+          return CameraInitResult(
+            status: CameraStatus.unavailable,
+            message: result?['message']?.toString() ?? '相机暂不可用',
+          );
+      }
     } on MissingPluginException {
-      return CameraStatus.unavailable;
-    } on PlatformException {
-      return CameraStatus.permissionDenied;
+      // Web / 编辑器预览：没有原生内核，走演示画面。
+      return const CameraInitResult(status: CameraStatus.demo, message: '演示取景');
+    } on PlatformException catch (error) {
+      return CameraInitResult(
+        status: CameraStatus.unavailable,
+        message: error.message ?? '相机初始化失败',
+      );
     }
   }
 
-  Future<void> setZoom(double zoom) => _channel.invokeMethod<void>('setZoom', {'zoom': zoom});
+  Future<bool> requestPermission() async {
+    try {
+      // 原生侧申请权限后直接配置会话，返回与 initialize 相同的结果字典。
+      final result =
+          await _channel.invokeMapMethod<String, dynamic>('requestPermission');
+      if (result?['status']?.toString() == 'ready') {
+        _initialized = true;
+        _textureId = (result?['textureId'] as num?)?.toInt();
+        return true;
+      }
+      return false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<void> openSettings() async {
+    try {
+      await _channel.invokeMethod<void>('openSettings');
+    } on MissingPluginException {
+      // 忽略：Web 预览无系统设置页。
+    } on PlatformException {
+      // 忽略。
+    }
+  }
+
+  Future<void> setZoom(double zoom) async {
+    try {
+      await _channel.invokeMethod<void>('setZoom', {'zoom': zoom});
+    } on MissingPluginException {
+      // 演示模式。
+    } on PlatformException {
+      // 镜头可能不支持该倍率，静默回退。
+    }
+  }
+
+  Future<void> switchCamera() async {
+    try {
+      await _channel.invokeMethod<void>('switchCamera');
+    } on MissingPluginException {
+      // 演示模式。
+    } on PlatformException {
+      // 忽略。
+    }
+  }
 
   Future<String?> takePhoto() async {
     try {
       return await _channel.invokeMethod<String>('takePhoto');
     } on MissingPluginException {
       return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  Future<bool> saveToAlbum(String? path, {String? bytes}) async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('saveToAlbum', {'path': ?path});
+      return ok ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> share(String? path) async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('share', {'path': ?path});
+      return ok ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
     }
   }
 }
 
-enum CameraStatus {
-  unavailable,
-  permissionDenied,
-  ready,
+enum CameraStatus { ready, demo, permissionDenied, unavailable }
+
+class CameraInitResult {
+  const CameraInitResult({required this.status, this.textureId, this.message});
+
+  final CameraStatus status;
+  final int? textureId;
+  final String? message;
 }

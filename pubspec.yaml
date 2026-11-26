@@ -10,10 +10,6 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.2.2
-  shared_preferences: ^2.3.2
-  path_provider: ^2.1.5
-  share_plus: ^10.1.4
-  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:
@@ -23,5 +19,9 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/ai/
     - assets/brand/
+    - assets/demo/
+  fonts:
+    - family: WenKai
+      fonts:
+        - asset: assets/fonts/LXGWWenKaiLite-Regular.ttf
