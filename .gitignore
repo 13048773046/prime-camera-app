@@ -13,3 +13,4 @@ ios/Pods/
 .idea/
 dist/
 *.iml
+dist_final/

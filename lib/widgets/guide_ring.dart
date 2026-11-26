@@ -110,7 +110,7 @@ class _GuidePainter extends CustomPainter {
         subjectBox[2] * size.width,
         subjectBox[3] * size.height,
       );
-      _paintSubject(canvas, rect);
+      _paintSubject(canvas, rect, size);
     }
 
     final hasTarget = targetBox.length == 4;
@@ -125,7 +125,7 @@ class _GuidePainter extends CustomPainter {
     }
   }
 
-  void _paintSubject(Canvas canvas, Rect rect) {
+  void _paintSubject(Canvas canvas, Rect rect, Size frame) {
     final len = math.min(rect.width, rect.height) * 0.30;
     final paint = Paint()
       ..style = PaintingStyle.stroke
@@ -143,6 +143,42 @@ class _GuidePainter extends CustomPainter {
     corner(rect.bottomLeft, 1, -1);
     corner(rect.bottomRight, -1, -1);
 
+    // 识别到主体时，在框上贴一枚“拍摄主体”小签，像取景器里的标注。
+    final label = TextPainter(
+      text: const TextSpan(
+        text: '拍摄主体',
+        style: TextStyle(
+          fontSize: 8.5,
+          height: 1.2,
+          letterSpacing: 1.1,
+          color: PrimeColor.ink,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final tagLeft =
+        (rect.right + 5).clamp(2.0, math.max(2.0, frame.width - label.width - 14)).toDouble();
+    final tagTop =
+        (rect.bottom + 4).clamp(2.0, math.max(2.0, frame.height - label.height - 8)).toDouble();
+    final tagRect = Rect.fromLTWH(
+      tagLeft,
+      tagTop,
+      label.width + 12,
+      label.height + 5,
+    );
+    canvas.drawRect(
+      tagRect,
+      Paint()..color = PrimeColor.paper.withValues(alpha: 0.9),
+    );
+    canvas.drawRect(
+      tagRect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8
+        ..color = PrimeColor.ink.withValues(alpha: 0.7),
+    );
+    label.paint(canvas, Offset(tagRect.left + 6, tagRect.top + 2.5));
   }
 
   void _paintTarget(Canvas canvas, Size frame, Rect rect) {

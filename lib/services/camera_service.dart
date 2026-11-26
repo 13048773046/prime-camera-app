@@ -1,24 +1,47 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
+
+import 'guidance.dart';
 
 /// 原生相机内核的 Dart 端。
 ///
 /// iOS 侧通过 `prime/camera` MethodChannel 暴露：
 /// initialize / requestPermission / openSettings / setZoom / switchCamera /
 /// takePhoto / saveToAlbum / share。
+/// 取景期间原生会反向调用 `guidance`，推送实时的主体框与手机角度。
 /// 未接入内核（Web 预览、单元测试）时返回 demo 状态，页面显示演示取景，不伪装成实时画面。
 class CameraService {
   CameraService({MethodChannel? channel, bool? forceDemo})
       : _channel = channel ?? const MethodChannel('prime/camera'),
-        _forceDemo = forceDemo ?? false;
+        _forceDemo = forceDemo ?? false {
+    _channel.setMethodCallHandler(_handleNativeCall);
+  }
 
   final MethodChannel _channel;
   final bool _forceDemo;
+  final StreamController<GuidanceFrame> _guidance =
+      StreamController<GuidanceFrame>.broadcast();
 
   bool _initialized = false;
   int? _textureId;
 
   int? get textureId => _textureId;
   bool get isReady => _initialized && _textureId != null;
+
+  /// 实时构图流：原生 5fps 左右推送，空结果表示画面里没有人。
+  Stream<GuidanceFrame> get guidanceStream => _guidance.stream;
+
+  Future<dynamic> _handleNativeCall(MethodCall call) async {
+    if (call.method == 'guidance' && call.arguments is Map) {
+      _guidance.add(
+        GuidanceFrame.fromMap(
+          Map<String, dynamic>.from(call.arguments as Map),
+        ),
+      );
+    }
+    return null;
+  }
 
   Future<CameraInitResult> initialize() async {
     if (_initialized) {

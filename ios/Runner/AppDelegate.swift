@@ -1,7 +1,9 @@
 import AVFoundation
+import CoreMotion
 import Flutter
 import Photos
 import UIKit
+import Vision
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -23,8 +25,18 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private let session = AVCaptureSession()
   private let sessionQueue = DispatchQueue(label: "com.prime.camera.session")
   private let videoQueue = DispatchQueue(label: "com.prime.camera.video")
+  private let visionQueue = DispatchQueue(label: "com.prime.camera.vision")
   private let videoOutput = AVCaptureVideoDataOutput()
   private let photoOutput = AVCapturePhotoOutput()
+
+  // 实时构图：Vision 以 ~6fps 找人脸/人体，CoreMotion 读取手机水平角。
+  private let visionLock = NSLock()
+  private var visionBusy = false
+  private var lastVisionAt: CFTimeInterval = 0
+  private let motionManager = CMMotionManager()
+  private let motionLock = NSLock()
+  private var rollDegrees: Double = 0
+  private var pitchDegrees: Double = 0
 
   private var textureId: Int64 = -1
   private var latestBuffer: CVPixelBuffer?
@@ -53,6 +65,29 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       name: UIApplication.didBecomeActiveNotification,
       object: nil
     )
+    startMotionTracking()
+  }
+
+  /// 手机水平角：用于“手机回正”口令，死区 1.2°。
+  private func startMotionTracking() {
+    guard motionManager.isDeviceMotionAvailable else { return }
+    motionManager.deviceMotionUpdateInterval = 0.1
+    motionManager.startDeviceMotionUpdates(
+      using: .xArbitraryZVertical,
+      to: .main
+    ) { [weak self] motion, _ in
+      guard let self = self, let motion = motion else { return }
+      self.motionLock.lock()
+      self.rollDegrees = motion.attitude.roll * 180.0 / Double.pi
+      self.pitchDegrees = motion.attitude.pitch * 180.0 / Double.pi
+      self.motionLock.unlock()
+    }
+  }
+
+  private func currentAngles() -> (roll: Double, pitch: Double) {
+    motionLock.lock()
+    defer { motionLock.unlock() }
+    return (rollDegrees, pitchDegrees)
   }
 
   /// 从后台回前台时恢复取景，避免纹理停在最后一帧。
@@ -283,6 +318,101 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     latestBuffer = imageBuffer
     bufferLock.unlock()
     registry.textureFrameAvailable(textureId)
+
+    // 只抽一部分帧做识别，保证预览优先流畅。
+    let now = CACurrentMediaTime()
+    guard now - lastVisionAt >= 0.16, beginVision() else { return }
+    lastVisionAt = now
+    let angles = currentAngles()
+    let buffer = imageBuffer
+    visionQueue.async { [weak self] in
+      guard let self = self else { return }
+      self.analyzeFrame(buffer, roll: angles.roll, pitch: angles.pitch)
+      self.endVision()
+    }
+  }
+
+  private func beginVision() -> Bool {
+    visionLock.lock()
+    defer { visionLock.unlock() }
+    if visionBusy { return false }
+    visionBusy = true
+    return true
+  }
+
+  private func endVision() {
+    visionLock.lock()
+    visionBusy = false
+    visionLock.unlock()
+  }
+
+  /// 在取景流上实时找人：人体框 + 人脸框，结果按 3:4 可见区域归一化后推给 Flutter。
+  private func analyzeFrame(_ pixelBuffer: CVPixelBuffer, roll: Double, pitch: Double) {
+    let humanRequest = VNDetectHumanRectanglesRequest()
+    humanRequest.upperBodyOnly = false
+    let faceRequest = VNDetectFaceRectanglesRequest()
+    let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+
+    do {
+      try handler.perform([humanRequest, faceRequest])
+      let humans = humanRequest.results ?? []
+      let faces = faceRequest.results ?? []
+      let human = humans.max { area(of: $0.boundingBox) < area(of: $1.boundingBox) }
+      let face = faces.max { area(of: $0.boundingBox) < area(of: $1.boundingBox) }
+      sendGuidance(
+        box: human.map { normalizeVisible($0.boundingBox) },
+        face: face.map { normalizeVisible($0.boundingBox) },
+        roll: roll,
+        pitch: pitch,
+        buffer: pixelBuffer
+      )
+    } catch {
+      sendGuidance(box: nil, face: nil, roll: roll, pitch: pitch, buffer: pixelBuffer)
+    }
+  }
+
+  private func area(of rect: CGRect) -> CGFloat {
+    rect.width * rect.height
+  }
+
+  /// 预览是 9:16 纹理按 3:4 裁切显示，只保留中间 75% 高度；坐标同步映射，避免框偏。
+  private func normalizeVisible(_ box: CGRect) -> [Double] {
+    let cropTop = 0.125
+    let cropHeight = 0.75
+    let left = max(0, min(1, Double(box.minX)))
+    let right = max(0, min(1, Double(box.maxX)))
+    let top = max(0, min(1, (1.0 - Double(box.maxY) - cropTop) / cropHeight))
+    let bottom = max(0, min(1, (1.0 - Double(box.minY) - cropTop) / cropHeight))
+    return [left, top, max(0, right - left), max(0, bottom - top)]
+  }
+
+  private func sendGuidance(
+    box: [Double]?,
+    face: [Double]?,
+    roll: Double,
+    pitch: Double,
+    buffer: CVPixelBuffer
+  ) {
+    let width = Double(CVPixelBufferGetWidth(buffer))
+    let height = Double(CVPixelBufferGetHeight(buffer))
+    // videoFieldOfView 是传感器横向视场；旋转到竖屏后横向对应传感器短边，按画幅比折算。
+    let nativeFov = Double(currentDevice?.activeFormat.videoFieldOfView ?? 60)
+    let shortSide = min(width, height)
+    let longSide = max(width, height)
+    let portraitFov = 2 * atan(tan(nativeFov * Double.pi / 360) * (shortSide / longSide)) * 180 / Double.pi
+    var payload: [String: Any] = [
+      "roll": roll,
+      "pitch": pitch,
+      "frameW": Int(width),
+      "frameH": Int(height),
+      "hfov": portraitFov,
+      "ts": Int(Date().timeIntervalSince1970 * 1000)
+    ]
+    if let box = box { payload["box"] = box }
+    if let face = face { payload["face"] = face }
+    DispatchQueue.main.async { [weak self] in
+      self?.channel.invokeMethod("guidance", arguments: payload)
+    }
   }
 
   // MARK: - Zoom / lens

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../services/camera_service.dart';
 import '../services/compose_api.dart';
+import '../services/guidance.dart';
 import '../theme.dart';
 import '../widgets/film_selector.dart';
 import '../widgets/guide_ring.dart';
@@ -37,6 +38,13 @@ class _CameraPageState extends State<CameraPage>
   bool _flash = false;
   ComposeResult? _guide;
   Timer? _alignTimer;
+  Timer? _analyzeTimer;
+  StreamSubscription<GuidanceFrame>? _guidanceSub;
+  final LiveComposer _composer = const LiveComposer();
+  bool _live = false;
+  bool _analyzing = false;
+  int _lastGuidanceTs = 0;
+  bool _wasAligned = false;
 
   static const List<double> _zoomValues = [0.5, 1.0, 2.0, 3.0];
   static const List<String> _zoomLabels = ['0.5×', '1×', '2×', '3×'];
@@ -53,6 +61,8 @@ class _CameraPageState extends State<CameraPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _alignTimer?.cancel();
+    _analyzeTimer?.cancel();
+    _guidanceSub?.cancel();
     super.dispose();
   }
 
@@ -71,9 +81,47 @@ class _CameraPageState extends State<CameraPage>
     setState(() {
       _status = init.status;
       _statusMessage = init.message;
+      _live = init.status == CameraStatus.ready;
+      _analyzing = _live;
     });
-    _startCommandCycle();
+    if (_live) {
+      _startLiveGuidance();
+    } else {
+      _startCommandCycle();
+    }
   }
+
+  void _startLiveGuidance() {
+    _guidanceSub?.cancel();
+    _analyzeTimer?.cancel();
+    _lastGuidanceTs = 0;
+    _wasAligned = false;
+    _guidanceSub = _camera.guidanceStream.listen(_onGuidanceFrame);
+    // 原生首帧约 100–300ms；先给一秒“分析中”，避免口令一闪而过。
+    _analyzeTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      setState(() => _analyzing = false);
+    });
+  }
+
+  void _onGuidanceFrame(GuidanceFrame frame) {
+    if (!mounted || !_live) return;
+    // UI 最高 4fps 更新，避免识别帧率带着整页抖动。
+    if (frame.ts - _lastGuidanceTs < 240) return;
+    _lastGuidanceTs = frame.ts;
+    final guide = _composer.compose(frame, zoom: _zoomValues[_zoomIndex]);
+    final newlyAligned = guide.confidence > 0 && _isAlignedGuide(guide);
+    setState(() {
+      _guide = guide;
+      _aligned = newlyAligned;
+      _alignProgress = newlyAligned ? 1.0 : guide.progress;
+    });
+    if (newlyAligned && !_wasAligned) HapticFeedback.lightImpact();
+    _wasAligned = newlyAligned;
+  }
+
+  bool _isAlignedGuide(ComposeResult guide) =>
+      guide.actionLabel == '已对齐' || guide.hint.startsWith('可以拍了');
 
   ComposeResult _presetFor(int index) {
     switch (index) {
@@ -129,6 +177,7 @@ class _CameraPageState extends State<CameraPage>
   }
 
   void _startCommandCycle() {
+    if (_live) return;
     _alignTimer?.cancel();
     final preset = _presetFor(_zoomIndex);
     setState(() {
@@ -157,7 +206,7 @@ class _CameraPageState extends State<CameraPage>
     if (_zoomIndex == index) return;
     setState(() => _zoomIndex = index);
     _camera.setZoom(_zoomValues[index]);
-    _startCommandCycle();
+    if (!_live) _startCommandCycle();
   }
 
   Future<void> _capture() async {
@@ -204,12 +253,7 @@ class _CameraPageState extends State<CameraPage>
     final granted = await _camera.requestPermission();
     if (!mounted) return;
     if (granted) {
-      final init = await _camera.initialize();
-      if (!mounted) return;
-      setState(() {
-        _status = init.status;
-        _statusMessage = init.message;
-      });
+      await _bootstrap();
     } else {
       setState(() {
         _status = CameraStatus.permissionDenied;
@@ -655,10 +699,14 @@ class _CameraPageState extends State<CameraPage>
   }
 
   Widget _buildBubble() {
-    final hint = _aligned ? '可以拍了，稳住呼吸' : (_guide?.hint ?? '举起手机，先把主体放进画面');
-    final reasons = _aligned
-        ? const ['位置已对齐', '撑住这一下']
-        : (_guide?.reasons ?? const ['等待第一次构图']);
+    final hint = _analyzing
+        ? '正在分析构图，请稳住手机'
+        : (_aligned ? '可以拍了，稳住呼吸' : (_guide?.hint ?? '举起手机，先把主体放进画面'));
+    final reasons = _analyzing
+        ? const ['正在识别人物与机位', '约一秒就好']
+        : (_aligned
+            ? const ['位置已对齐', '撑住这一下']
+            : (_guide?.reasons ?? const ['等待第一次构图']));
     return SpeechBubble(
       tailX: 44,
       padding: const EdgeInsets.fromLTRB(12, 11, 10, 11),
@@ -675,7 +723,9 @@ class _CameraPageState extends State<CameraPage>
                 Row(
                   children: [
                     Text(
-                      _aligned ? '流萤 · 对齐了' : '流萤 · 口令 ①',
+                      _aligned
+                          ? '流萤 · 对齐了'
+                          : (_live ? '流萤 · 实时口令' : '流萤 · 口令 ①'),
                       style: const TextStyle(
                         fontSize: 8.5,
                         letterSpacing: 1.4,
@@ -685,7 +735,11 @@ class _CameraPageState extends State<CameraPage>
                     ),
                     const Spacer(),
                     Text(
-                      _aligned ? '0.3°' : '距离优先',
+                      _analyzing
+                          ? '分析中'
+                          : (_guide?.distanceMeters == null || _aligned
+                              ? '距离优先'
+                              : '约 ${_guide!.distanceMeters!.toStringAsFixed(1)}m'),
                       style: const TextStyle(
                         fontSize: 7.5,
                         letterSpacing: 0.8,
@@ -729,9 +783,11 @@ class _CameraPageState extends State<CameraPage>
   }
 
   Widget _distanceChip() {
-    final text = _aligned ? '已对齐' : '再退\n0.4m';
+    final text = _analyzing
+        ? '识别中'
+        : (_aligned ? '已对齐' : (_guide?.actionLabel ?? '再退\n0.4m'));
     return Container(
-      width: 42,
+      width: 46,
       padding: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(
         color: PrimeColor.mint.withValues(alpha: _aligned ? 0.95 : 0.82),
@@ -846,6 +902,13 @@ class _CameraPageState extends State<CameraPage>
 
   Widget _buildMeters() {
     final t = _alignProgress;
+    final guide = _guide;
+    final distanceText = guide?.distanceMeters == null
+        ? (_aligned ? '0.0m' : '—')
+        : '${guide!.distanceMeters!.toStringAsFixed(1)}m';
+    final angleText = guide == null
+        ? '—'
+        : '${guide.horizonFix.abs().toStringAsFixed(1)}°';
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
       child: Column(
@@ -881,7 +944,7 @@ class _CameraPageState extends State<CameraPage>
                 child: MeterBar(
                   label: '距离',
                   value: 0.25 + 0.7 * t,
-                  readout: _aligned ? '0.0m' : '0.4m',
+                  readout: distanceText,
                   active: !_aligned,
                 ),
               ),
@@ -899,7 +962,7 @@ class _CameraPageState extends State<CameraPage>
                 child: MeterBar(
                   label: '角度',
                   value: 0.08 + 0.9 * t,
-                  readout: _aligned ? '1.2°' : '2.6°',
+                  readout: angleText,
                   active: false,
                 ),
               ),

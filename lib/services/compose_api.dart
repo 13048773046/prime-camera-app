@@ -11,6 +11,9 @@ class ComposeResult {
   final List<String> reasons;
   final double confidence;
   final String source;
+  final String? actionLabel;
+  final double? distanceMeters;
+  final double progress;
 
   const ComposeResult({
     required this.subject,
@@ -22,6 +25,9 @@ class ComposeResult {
     required this.reasons,
     required this.confidence,
     required this.source,
+    this.actionLabel,
+    this.distanceMeters,
+    this.progress = 0.12,
   });
 
   factory ComposeResult.fromJson(Map<String, dynamic> json) {
