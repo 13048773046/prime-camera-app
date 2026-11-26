@@ -1,10 +1,15 @@
 # 定焦 PRIME
 
-AI 构图相机 App 的前后端工程。当前阶段先交付可运行、可测试、可部署的后端构图服务；Flutter 前端与 iOS 原生相机插件将按 MVP 方案继续接入。
+AI 构图相机 App 的前后端工程。当前已落地 Flutter 前端壳、相机引导页、AR 目标环、口令流、出片页，以及 FastAPI 构图服务；iOS 原生相机内核将在真机环境继续接入。
 
 ## 目录
 
 ```
+lib/
+  main.dart          App 入口与主题
+  pages/             相机引导页、出片页
+  widgets/           AR 目标环
+  services/          构图接口客户端
 backend/
   app/
     main.py          FastAPI 入口与路由
@@ -14,8 +19,6 @@ backend/
     ai_client.py     视觉模型适配与 JSON 归一化
     rate_limit.py    深度指挥计次与去重
   tests/             pytest 接口测试
-  requirements.txt   Python 依赖
-  .env.example       环境变量示例
 ```
 
 ## 本地启动
@@ -33,12 +36,30 @@ python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8791
 curl http://127.0.0.1:8791/health
 ```
 
-## 测试
+## 前端开发与测试
+
+```bash
+flutter pub get
+flutter analyze
+flutter test
+```
+
+## 后端测试
 
 ```bash
 cd backend
 pytest -q
 ```
+
+## iOS 未签名 IPA
+
+仓库内置 `.github/workflows/ios-unsigned.yml`，在 macOS Runner 上执行：
+
+```bash
+flutter build ios --release --no-codesign
+```
+
+产物为未签名 IPA，需 AltStore、Sideloadly 或自签证书安装；TestFlight / App Store 还需要 Apple Developer 账号、证书和 Provisioning Profile。
 
 ## 接口
 
