@@ -39,7 +39,7 @@ class _WebPreviewStage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: const Color(0xFFE6E0D4),
+      color: const Color(0xFF0B0B0B),
       child: Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 12),
@@ -48,8 +48,13 @@ class _WebPreviewStage extends StatelessWidget {
             child: Container(
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(26),
+                border: Border.all(color: PrimeColor.white12, width: 0.8),
                 boxShadow: const [
-                  BoxShadow(color: Color(0x33120E08), blurRadius: 28, offset: Offset(0, 14)),
+                  BoxShadow(
+                    color: Color(0xCC000000),
+                    blurRadius: 36,
+                    offset: Offset(0, 18),
+                  ),
                 ],
               ),
               child: ClipRRect(

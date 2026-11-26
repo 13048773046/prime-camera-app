@@ -116,29 +116,40 @@ class CameraService {
     }
   }
 
-  Future<void> setZoom(double zoom) async {
+  /// 返回镜头实际采用的倍率；无超广角/受限机型会回落到最近可用的倍率。
+  Future<double?> setZoom(double zoom) async {
     try {
-      await _channel.invokeMethod<void>('setZoom', {'zoom': zoom});
+      final result =
+          await _channel.invokeMapMethod<String, dynamic>('setZoom', {'zoom': zoom});
+      return (result?['zoom'] as num?)?.toDouble();
     } on MissingPluginException {
       // 演示模式。
+      return null;
     } on PlatformException {
       // 镜头可能不支持该倍率，静默回退。
+      return null;
     }
   }
 
-  Future<void> switchCamera() async {
+  Future<double?> switchCamera() async {
     try {
-      await _channel.invokeMethod<void>('switchCamera');
+      final result = await _channel.invokeMapMethod<String, dynamic>('switchCamera');
+      return (result?['zoom'] as num?)?.toDouble();
     } on MissingPluginException {
       // 演示模式。
+      return null;
     } on PlatformException {
       // 忽略。
+      return null;
     }
   }
 
-  Future<String?> takePhoto() async {
+  Future<String?> takePhoto({bool flash = false}) async {
     try {
-      return await _channel.invokeMethod<String>('takePhoto');
+      return await _channel.invokeMethod<String>(
+        'takePhoto',
+        <String, dynamic>{'flash': flash},
+      );
     } on MissingPluginException {
       return null;
     } on PlatformException {

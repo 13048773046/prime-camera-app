@@ -34,7 +34,8 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 300));
     // 原生 ready 后先显示“分析中”，一秒后才允许口令接管。
-    expect(find.textContaining('正在分析构图'), findsOneWidget);
+    expect(find.text('正在进行人像构图分析'), findsOneWidget);
+    expect(find.text('请稳住手机，不要移动'), findsOneWidget);
 
     await tester.pump(const Duration(milliseconds: 1200));
     final codec = const StandardMethodCodec();
@@ -56,8 +57,9 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('流萤 · 对齐了'), findsOneWidget);
-    expect(find.text('可以拍了，稳住呼吸'), findsOneWidget);
-    expect(find.text('已对齐'), findsOneWidget);
+    expect(find.text('构图已锁定'), findsOneWidget);
+    expect(find.text('对齐了 · 可以按快门'), findsOneWidget);
+    expect(find.text('双环重合 · 直接出片'), findsOneWidget);
+    expect(find.text('切换构图方案'), findsOneWidget);
   });
 }

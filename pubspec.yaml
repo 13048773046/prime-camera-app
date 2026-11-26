@@ -19,9 +19,8 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/brand/
     - assets/demo/
   fonts:
-    - family: WenKai
+    - family: PrimeSans
       fonts:
-        - asset: assets/fonts/LXGWWenKaiLite-Regular.ttf
+        - asset: assets/fonts/PrimeSans.otf

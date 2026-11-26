@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,10 +9,7 @@ import '../services/camera_service.dart';
 import '../services/compose_api.dart';
 import '../services/guidance.dart';
 import '../theme.dart';
-import '../widgets/film_selector.dart';
 import '../widgets/guide_ring.dart';
-import '../widgets/manga_bits.dart';
-import '../widgets/paper.dart';
 import 'result_page.dart';
 
 class CameraPage extends StatefulWidget {
@@ -24,8 +22,23 @@ class CameraPage extends StatefulWidget {
   State<CameraPage> createState() => _CameraPageState();
 }
 
-class _CameraPageState extends State<CameraPage>
-    with TickerProviderStateMixin, WidgetsBindingObserver {
+class _ShotPlan {
+  const _ShotPlan({
+    required this.index,
+    required this.title,
+    required this.zoomLabel,
+    required this.framing,
+    required this.alignment,
+  });
+
+  final int index;
+  final String title;
+  final String zoomLabel;
+  final String framing;
+  final Alignment alignment;
+}
+
+class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   late final CameraService _camera =
       widget.camera ?? CameraService(forceDemo: widget.demo);
 
@@ -36,6 +49,9 @@ class _CameraPageState extends State<CameraPage>
   int _zoomIndex = 1;
   bool _capturing = false;
   bool _flash = false;
+  bool _flashOn = false;
+  bool _gridOn = false;
+  bool _planSheetOpen = false;
   ComposeResult? _guide;
   Timer? _alignTimer;
   Timer? _analyzeTimer;
@@ -47,8 +63,31 @@ class _CameraPageState extends State<CameraPage>
   bool _wasAligned = false;
 
   static const List<double> _zoomValues = [0.5, 1.0, 2.0, 3.0];
-  static const List<String> _zoomLabels = ['0.5×', '1×', '2×', '3×'];
-  static const List<String> _zoomCaptions = ['超广', '标准', '中焦', '长焦'];
+  static const List<String> _zoomLabels = ['.5', '1x', '2', '3'];
+
+  static const List<_ShotPlan> _plans = [
+    _ShotPlan(
+      index: 1,
+      title: '全身',
+      zoomLabel: '1×',
+      framing: '居中',
+      alignment: Alignment.center,
+    ),
+    _ShotPlan(
+      index: 2,
+      title: '七分身',
+      zoomLabel: '2×',
+      framing: '右三分',
+      alignment: Alignment.centerRight,
+    ),
+    _ShotPlan(
+      index: 3,
+      title: '九分身',
+      zoomLabel: '3×',
+      framing: '居中',
+      alignment: Alignment.topCenter,
+    ),
+  ];
 
   @override
   void initState() {
@@ -66,13 +105,19 @@ class _CameraPageState extends State<CameraPage>
     super.dispose();
   }
 
-  /// 从系统设置授权后回到前台，重新初始化一次相机。
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed &&
         _status == CameraStatus.permissionDenied) {
       _bootstrap();
     }
+  }
+
+  _ShotPlan get _activePlan {
+    for (final plan in _plans) {
+      if (plan.index == _zoomIndex) return plan;
+    }
+    return _plans.first;
   }
 
   Future<void> _bootstrap() async {
@@ -82,22 +127,51 @@ class _CameraPageState extends State<CameraPage>
       _status = init.status;
       _statusMessage = init.message;
       _live = init.status == CameraStatus.ready;
-      _analyzing = _live;
+      _analyzing =
+          init.status == CameraStatus.ready || init.status == CameraStatus.demo;
+      _guide = null;
+      _aligned = false;
+      _alignProgress = 0.12;
     });
     if (_live) {
       _startLiveGuidance();
-    } else {
-      _startCommandCycle();
+    } else if (init.status == CameraStatus.demo) {
+      _startDemoAnalysis();
+    } else if (init.status == CameraStatus.unavailable) {
+      setState(() => _analyzing = false);
     }
+  }
+
+  void _startDemoAnalysis() {
+    _alignTimer?.cancel();
+    _analyzeTimer?.cancel();
+    setState(() {
+      _analyzing = true;
+      _guide = null;
+      _aligned = false;
+      _alignProgress = 0.12;
+    });
+    _analyzeTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (!mounted) return;
+      setState(() => _analyzing = false);
+      _startCommandCycle();
+    });
   }
 
   void _startLiveGuidance() {
     _guidanceSub?.cancel();
+    _alignTimer?.cancel();
     _analyzeTimer?.cancel();
     _lastGuidanceTs = 0;
     _wasAligned = false;
+    setState(() {
+      _analyzing = true;
+      _guide = null;
+      _aligned = false;
+      _alignProgress = 0.12;
+    });
     _guidanceSub = _camera.guidanceStream.listen(_onGuidanceFrame);
-    // 原生首帧约 100–300ms；先给一秒“分析中”，避免口令一闪而过。
+    // 原生首帧约 100–300ms；先留一秒“稳住手机”的分析态。
     _analyzeTimer = Timer(const Duration(milliseconds: 1200), () {
       if (!mounted) return;
       setState(() => _analyzing = false);
@@ -177,7 +251,7 @@ class _CameraPageState extends State<CameraPage>
   }
 
   void _startCommandCycle() {
-    if (_live) return;
+    if (_live || _status != CameraStatus.demo) return;
     _alignTimer?.cancel();
     final preset = _presetFor(_zoomIndex);
     setState(() {
@@ -202,21 +276,56 @@ class _CameraPageState extends State<CameraPage>
     });
   }
 
-  void _selectZoom(int index) {
+  void _startAi() {
+    if (_live) {
+      _startLiveGuidance();
+    } else if (_status == CameraStatus.demo) {
+      _startDemoAnalysis();
+    }
+  }
+
+  Future<void> _switchCamera() async {
+    final actual = await _camera.switchCamera();
+    if (!mounted || actual == null) return;
+    final nearest = _nearestZoomIndex(actual);
+    if (nearest != _zoomIndex) setState(() => _zoomIndex = nearest);
+  }
+
+  Future<void> _selectZoom(int index) async {
     if (_zoomIndex == index) return;
     setState(() => _zoomIndex = index);
-    _camera.setZoom(_zoomValues[index]);
-    if (!_live) _startCommandCycle();
+    // 先让演示口令立刻跟手，再等原生回报实际可用倍率。
+    if (!_live && _status == CameraStatus.demo) _startCommandCycle();
+    final actual = await _camera.setZoom(_zoomValues[index]);
+    if (!mounted || actual == null) return;
+    final nearest = _nearestZoomIndex(actual);
+    if (nearest != _zoomIndex) setState(() => _zoomIndex = nearest);
+  }
+
+  int _nearestZoomIndex(double actual) {
+    var best = 0;
+    var distance = double.infinity;
+    for (var i = 0; i < _zoomValues.length; i++) {
+      final d = (_zoomValues[i] - actual).abs();
+      if (d < distance) {
+        distance = d;
+        best = i;
+      }
+    }
+    return best;
   }
 
   Future<void> _capture() async {
-    if (_capturing) return;
+    if (_capturing ||
+        (_status != CameraStatus.ready && _status != CameraStatus.demo)) {
+      return;
+    }
     setState(() {
       _capturing = true;
       _flash = true;
     });
     HapticFeedback.mediumImpact();
-    final path = await _camera.takePhoto();
+    final path = await _camera.takePhoto(flash: _flashOn);
     await Future.delayed(const Duration(milliseconds: 160));
     if (!mounted) return;
     setState(() {
@@ -262,52 +371,60 @@ class _CameraPageState extends State<CameraPage>
     }
   }
 
+  void _toggleFlash() {
+    setState(() => _flashOn = !_flashOn);
+  }
+
+  void _toggleGrid() {
+    setState(() => _gridOn = !_gridOn);
+  }
+
+  void _openPlanSheet() {
+    if (_planSheetOpen) return;
+    setState(() => _planSheetOpen = true);
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) => _PlanSheet(
+        plans: _plans,
+        selectedIndex: _zoomIndex,
+        sceneAsset: _status == CameraStatus.demo ? 'assets/demo/scene.jpg' : null,
+        onSelect: (index) {
+          Navigator.of(sheetContext).pop();
+          _selectZoom(index);
+        },
+      ),
+    ).whenComplete(() {
+      if (mounted) setState(() => _planSheetOpen = false);
+    });
+  }
+
+  void _openSettings() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _SettingsSheet(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: PrimeColor.paper,
-      body: PaperBackground(
-        child: Stack(
-          children: [
-            // 印在纸上的流萤：像手帐内页的淡彩插画。
-            Positioned(
-              right: -54,
-              bottom: 86,
-              child: IgnorePointer(
-                child: Transform.rotate(
-                  angle: -0.06,
-                  child: Opacity(
-                    opacity: 0.085,
-                    child: Image.asset(
-                      'assets/brand/xiaoying_full.png',
-                      height: 380,
-                      fit: BoxFit.contain,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            SafeArea(
-              child: Column(
-                children: [
-                  _buildHeader(),
-                  Expanded(child: _buildStage()),
-                  _buildMeters(),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                    child: FilmStripSelector(
-                      labels: _zoomLabels,
-                      captions: _zoomCaptions,
-                      activeIndex: _zoomIndex,
-                      onSelect: _selectZoom,
-                    ),
-                  ),
-                  _buildShutterRow(),
-                  _buildFooter(),
-                ],
-              ),
-            ),
-          ],
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light.copyWith(
+        statusBarColor: Colors.transparent,
+        systemNavigationBarColor: PrimeColor.black,
+      ),
+      child: Scaffold(
+        backgroundColor: PrimeColor.black,
+        body: SafeArea(
+          child: Column(
+            children: [
+              _buildTopBar(),
+              Expanded(child: _buildStage()),
+              _buildBottomControls(),
+            ],
+          ),
         ),
       ),
     );
@@ -315,117 +432,64 @@ class _CameraPageState extends State<CameraPage>
 
   // ---------------------------------------------------------------- header
 
-  Widget _buildHeader() {
+  Widget _buildTopBar() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 6, 16, 4),
+      padding: const EdgeInsets.fromLTRB(20, 8, 14, 4),
       child: Row(
         children: [
-          const SealStamp(text: '定', size: 34, angle: -0.06),
-          const SizedBox(width: 11),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        '定焦',
-                        style: TextStyle(
-                          fontFamily: PrimeFont.hand,
-                          fontFamilyFallback: PrimeFont.handFallback,
-                          fontSize: 29,
-                          height: 1,
-                          letterSpacing: 2,
-                          color: PrimeColor.ink,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 3),
-                        child: Text(
-                          'PRIME',
-                          style: TextStyle(
-                            fontSize: 10,
-                            letterSpacing: 3.6,
-                            color: PrimeColor.inkSoft,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    const BrushUnderline(width: 74, height: 7),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        'AI 构图相机 · 直出',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontFamily: PrimeFont.hand,
-                          fontFamilyFallback: PrimeFont.handFallback,
-                          fontSize: 9.5,
-                          color: PrimeColor.inkFaint,
-                          letterSpacing: 0.6,
-                          height: 1,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
           Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  const Text(
-                    '36',
-                    style: TextStyle(
-                      fontSize: 15,
-                      height: 1,
-                      fontWeight: FontWeight.w700,
-                      color: PrimeColor.ink,
-                      letterSpacing: 0.6,
-                    ),
-                  ),
-                  Text(
-                    ' EXP',
-                    style: TextStyle(
-                      fontSize: 8,
-                      height: 1,
-                      color: PrimeColor.inkFaint,
-                      letterSpacing: 1.2,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
               const Text(
-                'ISO 400 · 35mm',
+                '定焦',
                 style: TextStyle(
-                  fontSize: 7.5,
+                  fontSize: 18,
                   height: 1,
-                  color: PrimeColor.inkFaint,
-                  letterSpacing: 0.8,
+                  color: PrimeColor.white,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 3,
+                ),
+              ),
+              const SizedBox(height: 5),
+              Text(
+                'PRIME',
+                style: PrimeType.overline.copyWith(
+                  color: PrimeColor.white24,
+                  letterSpacing: 3,
                 ),
               ),
             ],
           ),
-          const SizedBox(width: 9),
-          const MascotAvatar(size: 32),
+          const Spacer(),
+          _topIcon(
+            _flashOn ? Icons.bolt : Icons.bolt_outlined,
+            _toggleFlash,
+            active: _flashOn,
+          ),
+          _topIcon(Icons.tune_rounded, _openSettings),
         ],
+      ),
+    );
+  }
+
+  Widget _topIcon(IconData icon, VoidCallback onTap, {bool active = false}) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: 38,
+        height: 38,
+        margin: const EdgeInsets.only(left: 2),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: active ? PrimeColor.white12 : Colors.transparent,
+        ),
+        alignment: Alignment.center,
+        child: Icon(
+          icon,
+          size: 19,
+          color: active ? PrimeColor.white : PrimeColor.white54,
+        ),
       ),
     );
   }
@@ -435,75 +499,53 @@ class _CameraPageState extends State<CameraPage>
   Widget _buildStage() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final maxW = constraints.maxWidth - 30;
-        final maxH = constraints.maxHeight - 12;
+        final maxW = constraints.maxWidth - 24;
+        final maxH = constraints.maxHeight - 8;
         final width = math.min(maxW, maxH * 0.75);
         final height = width * 4 / 3;
         return Center(
           child: SizedBox(
             width: width,
             height: height,
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                Positioned.fill(
-                  child: InkFrame(
-                    radius: 4,
-                    strong: true,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(3),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          _buildPreview(),
-                          IgnorePointer(
-                            child: CustomPaint(
-                              painter: _ViewfinderGradePainter(),
-                            ),
-                          ),
-                          if (_guide != null)
-                            GuideOverlay(
-                              subjectBox: _guide!.subjectBox,
-                              targetBox: _guide!.targetBox,
-                              aligned: _aligned,
-                              confidence: _guide!.confidence,
-                            ),
-                          _buildHud(),
-                          _buildVerticalCaption(),
-                          _buildDistanceRuler(),
-                          Positioned(
-                            left: 9,
-                            right: 9,
-                            bottom: 9,
-                            child: _buildBubble(),
-                          ),
-                          if (_status == CameraStatus.permissionDenied)
-                            Positioned.fill(child: _buildPermissionCard()),
-                          if (_flash)
-                            const Positioned.fill(
-                              child: ColoredBox(color: Color(0xF2FFFFFF)),
-                            ),
-                        ],
-                      ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _buildPreview(),
+                  IgnorePointer(
+                    child: CustomPaint(painter: _ViewfinderGradePainter()),
+                  ),
+                  IgnorePointer(
+                    child: GuideOverlay(
+                      subjectBox: _guide?.subjectBox ?? const [],
+                      targetBox: _guide?.targetBox ?? const [],
+                      aligned: _aligned,
+                      analyzing: _analyzing,
+                      showGrid: _gridOn,
                     ),
                   ),
-                ),
-                // 贴在分格边上的手写标签。
-                Positioned(
-                  top: -8,
-                  left: 4,
-                  child: InkTag(text: 'No.01 取景', angle: -0.02, dense: true),
-                ),
-                Positioned(
-                  top: -8,
-                  right: 4,
-                  child: InkTag(
-                    text: 'PORTRAIT · 3:4',
-                    angle: 0.02,
-                    dense: true,
+                  Positioned(
+                    left: 10,
+                    right: 10,
+                    top: 10,
+                    child: _buildGuideCard(),
                   ),
-                ),
-              ],
+                  if (!_planSheetOpen)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 10,
+                      child: _buildFocalPill(),
+                    ),
+                  if (_status == CameraStatus.permissionDenied)
+                    Positioned.fill(child: _buildPermissionCard()),
+                  if (_flash)
+                    const Positioned.fill(
+                      child: ColoredBox(color: Color(0xF2FFFFFF)),
+                    ),
+                ],
+              ),
             ),
           ),
         );
@@ -516,7 +558,6 @@ class _CameraPageState extends State<CameraPage>
       case CameraStatus.ready:
         final id = _camera.textureId;
         if (id != null) {
-          // 原生视频流是 9:16 竖幅，按 cover 填满 3:4 取景窗，裁掉上下多余部分。
           return ClipRect(
             child: FittedBox(
               fit: BoxFit.cover,
@@ -529,283 +570,480 @@ class _CameraPageState extends State<CameraPage>
             ),
           );
         }
-        return const ColoredBox(color: PrimeColor.dark);
+        return const ColoredBox(color: PrimeColor.black);
       case CameraStatus.demo:
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.asset('assets/demo/scene.jpg', fit: BoxFit.cover),
-            Positioned(
-              left: 10,
-              top: 42,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                decoration: BoxDecoration(
-                  color: PrimeColor.paper.withValues(alpha: 0.9),
-                  border: Border.all(
-                    color: PrimeColor.ink.withValues(alpha: 0.7),
-                    width: 0.8,
-                  ),
-                ),
-                child: const Text(
-                  '演示取景 · 真机为实时画面',
-                  style: TextStyle(
-                    fontSize: 8,
-                    letterSpacing: 0.8,
-                    color: PrimeColor.ink,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        );
+        return Image.asset('assets/demo/scene.jpg', fit: BoxFit.cover);
       case CameraStatus.permissionDenied:
       case CameraStatus.unavailable:
-        return Container(
-          color: PrimeColor.dark,
-          alignment: Alignment.center,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.no_photography_outlined,
-                color: Colors.white24,
-                size: 40,
-              ),
-              const SizedBox(height: 10),
-              Text(
-                _statusMessage ?? '相机未就绪',
-                style: const TextStyle(
-                  color: Colors.white38,
-                  fontSize: 11,
-                  letterSpacing: 1,
-                ),
-              ),
-            ],
-          ),
-        );
-    }
-  }
-
-  Widget _buildHud() {
-    final zoomText = _zoomLabels[_zoomIndex];
-    return Positioned(
-      top: 10,
-      left: 10,
-      right: 10,
-      child: Row(
-        children: [
-          _hudChip(zoomText),
-          const SizedBox(width: 5),
-          _hudChip('f/1.8'),
-          const SizedBox(width: 5),
-          _hudChip('1/125'),
-          const Spacer(),
-          _hudChip(
-            _status == CameraStatus.demo ? 'DEMO' : 'LIVE',
-            accent: _status == CameraStatus.demo,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _hudChip(String text, {bool accent = false}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.42),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.22),
-          width: 0.7,
-        ),
-        borderRadius: BorderRadius.circular(2),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (accent) ...[
-            Container(
-              width: 4,
-              height: 4,
-              decoration: const BoxDecoration(
-                color: PrimeColor.mint,
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 4),
-          ],
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 8,
-              height: 1,
-              letterSpacing: 1.1,
-              color: accent ? PrimeColor.mint : Colors.white70,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildVerticalCaption() {
-    return Positioned(
-      right: 6,
-      top: 64,
-      child: IgnorePointer(
-        child: RotatedBox(
-          quarterTurns: 3,
-          child: Text(
-            '一 格 一 世 界 · 光 落 在 肩 上',
-            style: TextStyle(
-              fontFamily: PrimeFont.hand,
-              fontFamilyFallback: PrimeFont.handFallback,
-              fontSize: 8.5,
-              letterSpacing: 1.8,
-              color: Colors.white.withValues(alpha: 0.42),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDistanceRuler() {
-    return Positioned(
-      left: 0,
-      top: 52,
-      child: SizedBox(
-        width: 34,
-        height: 152,
-        child: IgnorePointer(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-                colors: [
-                  Colors.black.withValues(alpha: 0.34),
-                  Colors.transparent,
-                ],
-              ),
-            ),
-            child: CustomPaint(painter: _RulerPainter()),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBubble() {
-    final hint = _analyzing
-        ? '正在分析构图，请稳住手机'
-        : (_aligned ? '可以拍了，稳住呼吸' : (_guide?.hint ?? '举起手机，先把主体放进画面'));
-    final reasons = _analyzing
-        ? const ['正在识别人物与机位', '约一秒就好']
-        : (_aligned
-            ? const ['位置已对齐', '撑住这一下']
-            : (_guide?.reasons ?? const ['等待第一次构图']));
-    return SpeechBubble(
-      tailX: 44,
-      padding: const EdgeInsets.fromLTRB(12, 11, 10, 11),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          const MascotAvatar(size: 31),
-          const SizedBox(width: 9),
-          Expanded(
+        return ColoredBox(
+          color: PrimeColor.surface,
+          child: Center(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Row(
-                  children: [
-                    Text(
-                      _aligned
-                          ? '流萤 · 对齐了'
-                          : (_live ? '流萤 · 实时口令' : '流萤 · 口令 ①'),
-                      style: const TextStyle(
-                        fontSize: 8.5,
-                        letterSpacing: 1.4,
-                        color: PrimeColor.inkSoft,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      _analyzing
-                          ? '分析中'
-                          : (_guide?.distanceMeters == null || _aligned
-                              ? '距离优先'
-                              : '约 ${_guide!.distanceMeters!.toStringAsFixed(1)}m'),
-                      style: const TextStyle(
-                        fontSize: 7.5,
-                        letterSpacing: 0.8,
-                        color: PrimeColor.inkFaint,
-                      ),
-                    ),
-                  ],
+                Icon(
+                  _status == CameraStatus.permissionDenied
+                      ? Icons.no_photography_outlined
+                      : Icons.camera_outlined,
+                  color: PrimeColor.white24,
+                  size: 40,
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 12),
                 Text(
-                  hint,
-                  style: TextStyle(
-                    fontFamily: PrimeFont.hand,
-                    fontFamilyFallback: PrimeFont.handFallback,
-                    fontSize: 17,
-                    height: 1.25,
-                    color: PrimeColor.ink,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  reasons.join(' · '),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: PrimeFont.hand,
-                    fontFamilyFallback: PrimeFont.handFallback,
-                    fontSize: 10,
-                    height: 1.1,
-                    color: PrimeColor.inkFaint,
+                  _statusMessage ?? '相机未就绪',
+                  style: PrimeType.caption.copyWith(
+                    color: PrimeColor.white38,
+                    letterSpacing: 1,
                   ),
                 ),
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          _distanceChip(),
+        );
+    }
+  }
+
+  Widget _buildGuideCard() {
+    final label = _analyzing
+        ? 'PRIME · AI'
+        : _aligned
+            ? '构图已锁定'
+            : 'PRIME · AI 构图';
+    final title = _analyzing
+        ? '正在进行人像构图分析'
+        : _aligned
+            ? '对齐了 · 可以按快门'
+            : (_guide?.hint ?? '把主体放进画面');
+    final subtitle = _analyzing
+        ? '请稳住手机，不要移动'
+        : _aligned
+            ? '双环重合 · 直接出片'
+            : '${_activePlan.title} · ${_activePlan.zoomLabel} · ${_activePlan.framing}';
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(10, 10, 12, 10),
+          decoration: BoxDecoration(
+            color: const Color(0xE60A0A0A),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: PrimeColor.white12, width: 0.8),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: PrimeColor.white12),
+                ),
+                alignment: Alignment.center,
+                child: const _SparkleMark(size: 17, color: PrimeColor.white70),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      label,
+                      style: PrimeType.overline.copyWith(
+                        color: PrimeColor.white38,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 14.5,
+                        height: 1.3,
+                        color: PrimeColor.white,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: PrimeType.caption.copyWith(
+                        color: PrimeColor.white54,
+                        fontSize: 10.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (_analyzing)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.2,
+                    color: PrimeColor.white54,
+                  ),
+                )
+              else if (_aligned)
+                const Icon(
+                  Icons.check_rounded,
+                  size: 18,
+                  color: PrimeColor.white,
+                )
+              else
+                const Icon(
+                  Icons.auto_awesome,
+                  size: 15,
+                  color: PrimeColor.white24,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFocalPill() {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: const Color(0xB3000000),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: PrimeColor.white12, width: 0.8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (int i = 0; i < _zoomLabels.length; i++)
+              GestureDetector(
+                key: ValueKey('zoom-$i'),
+                onTap: () => _selectZoom(i),
+                behavior: HitTestBehavior.opaque,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  curve: Curves.easeOut,
+                  width: i == _zoomIndex ? 44 : 36,
+                  height: 32,
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: i == _zoomIndex
+                        ? PrimeColor.white
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Text(
+                    _zoomLabels[i],
+                    style: TextStyle(
+                      fontSize: 11,
+                      height: 1,
+                      letterSpacing: 0.2,
+                      color: i == _zoomIndex
+                          ? PrimeColor.black
+                          : PrimeColor.white38,
+                      fontWeight: FontWeight.w600,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --------------------------------------------------------------- controls
+
+  Widget _buildBottomControls() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: _guide != null && !_analyzing
+                ? _buildPlanPill()
+                : const SizedBox(height: 34),
+          ),
+          const SizedBox(height: 4),
+          _buildUtilityRow(),
+          const SizedBox(height: 2),
+          _buildShutterRow(),
+          const SizedBox(height: 2),
+          _buildBottomNav(),
         ],
       ),
     );
   }
 
-  Widget _distanceChip() {
-    final text = _analyzing
-        ? '识别中'
-        : (_aligned ? '已对齐' : (_guide?.actionLabel ?? '再退\n0.4m'));
-    return Container(
-      width: 46,
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      decoration: BoxDecoration(
-        color: PrimeColor.mint.withValues(alpha: _aligned ? 0.95 : 0.82),
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(
-          color: PrimeColor.ink.withValues(alpha: 0.75),
-          width: 0.9,
+  Widget _buildUtilityRow() {
+    return SizedBox(
+      height: 36,
+      child: Row(
+        children: [
+          _utilityIcon(
+            Icons.grid_view_rounded,
+            _toggleGrid,
+            active: _gridOn,
+          ),
+          const Spacer(),
+          Text(
+            '3:4',
+            style: PrimeType.overline.copyWith(
+              color: PrimeColor.white38,
+              letterSpacing: 1.4,
+            ),
+          ),
+          const Spacer(),
+          _utilityIcon(
+            Icons.cameraswitch_outlined,
+            _switchCamera,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _utilityIcon(IconData icon, VoidCallback onTap, {bool active = false}) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 36,
+        height: 36,
+        child: Icon(
+          icon,
+          size: 18,
+          color: active ? PrimeColor.white : PrimeColor.white38,
         ),
       ),
-      child: Text(
-        text,
-        textAlign: TextAlign.center,
-        style: const TextStyle(
-          fontSize: 8.5,
-          height: 1.25,
-          color: PrimeColor.ink,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.4,
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return Center(
+      child: Container(
+        height: 44,
+        width: 250,
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: PrimeColor.white06,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: PrimeColor.white12, width: 0.8),
+        ),
+        child: Row(
+          children: [
+            _navItem('相机', active: true),
+            _navItem('相册'),
+            _navItem('我的', onTap: _openSettings),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _navItem(String label, {bool active = false, VoidCallback? onTap}) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          decoration: BoxDecoration(
+            color: active ? PrimeColor.white12 : Colors.transparent,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: active ? PrimeColor.white : PrimeColor.white38,
+              fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlanPill() {
+    return GestureDetector(
+      onTap: _openPlanSheet,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: PrimeColor.white06,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: PrimeColor.white12, width: 0.8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.grid_view_rounded,
+              size: 14,
+              color: PrimeColor.white38,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '切换构图方案',
+              style: PrimeType.caption.copyWith(
+                color: PrimeColor.white54,
+                fontSize: 11,
+              ),
+            ),
+            const SizedBox(width: 6),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 16,
+              color: PrimeColor.white38,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildShutterRow() {
+    return SizedBox(
+      height: 92,
+      child: Row(
+        children: [
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _bottomAction(
+                label: '相册',
+                child: _buildAlbumButton(),
+              ),
+            ),
+          ),
+          _buildShutterButton(),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: _bottomAction(
+                label: 'AI 构图',
+                child: _buildAiButton(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _bottomAction({required String label, required Widget child}) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        child,
+        const SizedBox(height: 5),
+        Text(
+          label,
+          style: PrimeType.overline.copyWith(
+            color: PrimeColor.white38,
+            letterSpacing: 1.2,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAlbumButton() {
+    return Container(
+      width: 44,
+      height: 44,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: PrimeColor.surfaceLift,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: PrimeColor.white12, width: 0.8),
+      ),
+      child: Image.asset(
+        'assets/demo/scene.jpg',
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) => const Icon(
+          Icons.photo_library_outlined,
+          size: 20,
+          color: PrimeColor.white38,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAiButton() {
+    return GestureDetector(
+      onTap: _startAi,
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: PrimeColor.white12, width: 0.8),
+        ),
+        alignment: Alignment.center,
+        child: _SparkleMark(
+          size: 18,
+          color: _analyzing ? PrimeColor.white38 : PrimeColor.white70,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildShutterButton() {
+    return GestureDetector(
+      key: const ValueKey('shutter'),
+      onTap: _capture,
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedScale(
+        scale: _capturing ? 0.93 : 1.0,
+        duration: const Duration(milliseconds: 120),
+        child: SizedBox(
+          width: 78,
+          height: 78,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              CustomPaint(
+                size: const Size(78, 78),
+                painter: _ShutterProgressPainter(
+                  progress: _alignProgress,
+                  aligned: _aligned,
+                ),
+              ),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 140),
+                width: _capturing ? 46 : 58,
+                height: _capturing ? 46 : 58,
+                decoration: BoxDecoration(
+                  color: PrimeColor.white,
+                  shape: BoxShape.circle,
+                  boxShadow: _aligned
+                      ? [
+                          BoxShadow(
+                            color: PrimeColor.white.withValues(alpha: 0.18),
+                            blurRadius: 18,
+                            spreadRadius: 2,
+                          ),
+                        ]
+                      : null,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -813,384 +1051,189 @@ class _CameraPageState extends State<CameraPage>
 
   Widget _buildPermissionCard() {
     return ColoredBox(
-      color: Colors.black.withValues(alpha: 0.55),
+      color: Colors.black.withValues(alpha: 0.6),
       child: Center(
         child: Container(
-          margin: const EdgeInsets.all(16),
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+          margin: const EdgeInsets.all(18),
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
           decoration: BoxDecoration(
-            color: PrimeColor.paper,
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: PrimeColor.ink, width: 1.3),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x33000000),
-                blurRadius: 18,
-                offset: Offset(0, 8),
-              ),
-            ],
+            color: const Color(0xF20A0A0A),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: PrimeColor.white12, width: 0.8),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Image.asset(
-                    'assets/brand/xiaoying_bust.png',
-                    width: 84,
-                    height: 96,
-                    fit: BoxFit.cover,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '相机还在打盹',
-                          style: TextStyle(
-                            fontFamily: PrimeFont.hand,
-                            fontFamilyFallback: PrimeFont.handFallback,
-                            fontSize: 19,
-                            height: 1.2,
-                            color: PrimeColor.ink,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          '允许定焦使用相机，才能看到实时取景和 AR 构图环。',
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            height: 1.5,
-                            color: PrimeColor.inkSoft,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+              const Icon(
+                Icons.camera_outlined,
+                size: 28,
+                color: PrimeColor.white54,
               ),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: InkButton(
-                      label: '允许使用相机',
-                      filled: true,
-                      height: 40,
-                      expand: true,
-                      onTap: _requestPermission,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  InkButton(
-                    label: '去设置',
-                    height: 40,
-                    onTap: () => _camera.openSettings(),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ---------------------------------------------------------------- meters
-
-  Widget _buildMeters() {
-    final t = _alignProgress;
-    final guide = _guide;
-    final distanceText = guide?.distanceMeters == null
-        ? (_aligned ? '0.0m' : '—')
-        : '${guide!.distanceMeters!.toStringAsFixed(1)}m';
-    final angleText = guide == null
-        ? '—'
-        : '${guide.horizonFix.abs().toStringAsFixed(1)}°';
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Container(width: 3, height: 9, color: PrimeColor.mintDeep),
-              const SizedBox(width: 5),
               const Text(
-                '口令刻度',
+                '需要相机权限',
                 style: TextStyle(
-                  fontSize: 8,
-                  letterSpacing: 1.6,
-                  color: PrimeColor.inkSoft,
+                  fontSize: 17,
+                  height: 1.2,
+                  color: PrimeColor.white,
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              const Spacer(),
+              const SizedBox(height: 6),
               const Text(
-                '距离 › 高度 › 角度 › 焦段',
+                '允许定焦使用相机，才能看到实时取景和构图引导。',
+                textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontSize: 7.5,
-                  letterSpacing: 0.8,
-                  color: PrimeColor.inkFaint,
+                  fontSize: 12,
+                  height: 1.5,
+                  color: PrimeColor.white54,
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 5),
-          Row(
-            children: [
-              Expanded(
-                child: MeterBar(
-                  label: '距离',
-                  value: 0.25 + 0.7 * t,
-                  readout: distanceText,
-                  active: !_aligned,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: MeterBar(
-                  label: '高度',
-                  value: 0.35 + 0.55 * t,
-                  readout: _aligned ? '平视' : '−8cm',
-                  active: false,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: MeterBar(
-                  label: '角度',
-                  value: 0.08 + 0.9 * t,
-                  readout: angleText,
-                  active: false,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  // --------------------------------------------------------------- shutter
-
-  Widget _buildShutterRow() {
-    return SizedBox(
-      height: 98,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
-        child: Row(
-          children: [
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _albumTile(),
-                const SizedBox(height: 4),
-                const Text(
-                  '最近',
-                  style: TextStyle(
-                    fontSize: 8,
-                    letterSpacing: 1.2,
-                    color: PrimeColor.inkFaint,
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: _primaryButton('允许使用相机', _requestPermission),
                   ),
-                ),
-              ],
-            ),
-            const Spacer(),
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: _capture,
-                  child: AnimatedScale(
-                    scale: _capturing ? 0.93 : 1.0,
-                    duration: const Duration(milliseconds: 120),
-                    child: SizedBox(
-                      width: 72,
-                      height: 72,
-                      child: CustomPaint(
-                        painter: _ShutterPainter(
-                          progress: _alignProgress,
-                          aligned: _aligned,
-                          busy: false,
-                        ),
-                        child: Center(
-                          child: Text(
-                            '拍',
-                            style: TextStyle(
-                              fontFamily: PrimeFont.hand,
-                              fontFamilyFallback: PrimeFont.handFallback,
-                              fontSize: 20,
-                              height: 1,
-                              color: PrimeColor.ink,
-                              letterSpacing: 1,
-                            ),
-                          ),
-                        ),
-                      ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _outlineButton(
+                      '去设置',
+                      () => _camera.openSettings(),
                     ),
                   ),
-                ),
-                const SizedBox(height: 3),
-                const Text(
-                  '按一下 · 直出',
-                  style: TextStyle(
-                    fontSize: 8,
-                    letterSpacing: 1.2,
-                    color: PrimeColor.inkFaint,
-                  ),
-                ),
-              ],
-            ),
-            const Spacer(),
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                RoundInkButton(
-                  icon: Icons.cameraswitch_outlined,
-                  size: 44,
-                  onTap: () => _camera.switchCamera(),
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  '翻转',
-                  style: TextStyle(
-                    fontSize: 8,
-                    letterSpacing: 1.2,
-                    color: PrimeColor.inkFaint,
-                  ),
-                ),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _albumTile() {
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            border: Border.all(
-              color: PrimeColor.ink.withValues(alpha: 0.85),
-              width: 1.1,
-            ),
-            color: PrimeColor.paperDeep,
-          ),
-          child: ClipRect(
-            child: Image.asset(
-              'assets/demo/scene.jpg',
-              fit: BoxFit.cover,
-              width: 44,
-              height: 44,
-            ),
-          ),
-        ),
-        const Positioned(
-          left: -6,
-          top: -5,
-          child: TapeStrip(width: 24, height: 9, angle: -0.4),
-        ),
-      ],
-    );
-  }
-
-  // ---------------------------------------------------------------- footer
-
-  Widget _buildFooter() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 2, 18, 4),
-      child: Row(
-        children: [
-          _navTab('取景', active: true),
-          const SizedBox(width: 16),
-          _navTab('手记', onTap: _openNotebook),
-          const SizedBox(width: 16),
-          _navTab('设定', onTap: _openNotebook),
-          const Spacer(),
-          const HeartBadge(count: 12),
-        ],
-      ),
-    );
-  }
-
-  Widget _navTab(String label, {bool active = false, VoidCallback? onTap}) {
+  Widget _primaryButton(String label, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontFamily: PrimeFont.hand,
-              fontFamilyFallback: PrimeFont.handFallback,
-              fontSize: 13,
-              height: 1.2,
-              color: active ? PrimeColor.ink : PrimeColor.inkFaint,
-            ),
+      child: Container(
+        height: 42,
+        decoration: BoxDecoration(
+          color: PrimeColor.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            color: PrimeColor.black,
+            fontWeight: FontWeight.w600,
           ),
-          const SizedBox(height: 2),
-          if (active)
-            const BrushUnderline(width: 26, height: 5)
-          else
-            const SizedBox(width: 26, height: 5),
-        ],
+        ),
       ),
     );
   }
 
-  void _openNotebook() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) => const _NotebookSheet(),
+  Widget _outlineButton(String label, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 42,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: PrimeColor.white24, width: 0.8),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            color: PrimeColor.white54,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ),
     );
   }
 }
 
 // ---------------------------------------------------------------- painters
 
+class _SparkleMark extends StatelessWidget {
+  const _SparkleMark({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: Size.square(size),
+      painter: _SparklePainter(color: color),
+    );
+  }
+}
+
+class _SparklePainter extends CustomPainter {
+  _SparklePainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = size.center(Offset.zero);
+    final r = size.width / 2;
+    final path = Path()
+      ..moveTo(c.dx, c.dy - r)
+      ..quadraticBezierTo(c.dx + r * 0.17, c.dy - r * 0.17, c.dx + r, c.dy)
+      ..quadraticBezierTo(c.dx + r * 0.17, c.dy + r * 0.17, c.dx, c.dy + r)
+      ..quadraticBezierTo(c.dx - r * 0.17, c.dy + r * 0.17, c.dx - r, c.dy)
+      ..quadraticBezierTo(c.dx - r * 0.17, c.dy - r * 0.17, c.dx, c.dy - r);
+    canvas.drawPath(path, Paint()..color = color);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SparklePainter oldDelegate) =>
+      oldDelegate.color != color;
+}
+
 class _ViewfinderGradePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final rect = Offset.zero & size;
-    // 底部渐变，保证口令气泡压得住画面。
+    final top = Rect.fromLTWH(0, 0, size.width, size.height * 0.34);
     canvas.drawRect(
-      Rect.fromLTWH(0, size.height * 0.55, size.width, size.height * 0.45),
+      top,
       Paint()
-        ..shader =
-            const LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0x00000000), Color(0x8C000000), Color(0xCC000000)],
-              stops: [0.0, 0.55, 1.0],
-            ).createShader(
-              Rect.fromLTWH(
-                0,
-                size.height * 0.55,
-                size.width,
-                size.height * 0.45,
-              ),
-            ),
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xB3000000), Color(0x00000000)],
+        ).createShader(top),
     );
-    // 暗角。
+
+    final bottom = Rect.fromLTWH(
+      0,
+      size.height * 0.58,
+      size.width,
+      size.height * 0.42,
+    );
+    canvas.drawRect(
+      bottom,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0x00000000), Color(0x99000000)],
+        ).createShader(bottom),
+    );
+
+    final rect = Offset.zero & size;
     canvas.drawRect(
       rect,
       Paint()
         ..shader = RadialGradient(
-          radius: 1.05,
-          colors: [Colors.transparent, Colors.black.withValues(alpha: 0.34)],
-          stops: const [0.55, 1.0],
+          radius: 1.08,
+          colors: [Colors.transparent, Colors.black.withValues(alpha: 0.28)],
+          stops: const [0.52, 1.0],
         ).createShader(rect),
     );
   }
@@ -1199,272 +1242,281 @@ class _ViewfinderGradePainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-class _RulerPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.white.withValues(alpha: 0.38);
-    final strongPaint = Paint()..color = Colors.white.withValues(alpha: 0.6);
-    final labels = ['3', '2', '1', '0.5'];
-    final step = size.height / (labels.length - 1);
-    for (int i = 0; i < labels.length; i++) {
-      final y = i * step;
-      final isCurrent = i == 2;
-      canvas.drawLine(
-        Offset(size.width - 12, y),
-        Offset(size.width, y),
-        isCurrent ? strongPaint : paint,
-      );
-      final tp = TextPainter(
-        text: TextSpan(
-          text: labels[i],
-          style: TextStyle(
-            fontSize: 6.5,
-            color: Colors.white.withValues(alpha: 0.5),
-            letterSpacing: 0.4,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tp.paint(
-        canvas,
-        Offset(size.width - 12 - tp.width - 3, y - tp.height / 2),
-      );
-      if (i < labels.length - 1) {
-        for (int j = 1; j < 4; j++) {
-          final ty = y + step * j / 4;
-          canvas.drawLine(
-            Offset(size.width - 6, ty),
-            Offset(size.width, ty),
-            paint,
-          );
-        }
-      }
-    }
-    // 当前距离的小三角。
-    canvas.drawPath(
-      Path()
-        ..moveTo(size.width - 2, step * 2 - 3)
-        ..lineTo(size.width + 4, step * 2)
-        ..lineTo(size.width - 2, step * 2 + 3)
-        ..close(),
-      Paint()..color = PrimeColor.mint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _ShutterPainter extends CustomPainter {
-  _ShutterPainter({
-    required this.progress,
-    required this.aligned,
-    required this.busy,
-  });
+class _ShutterProgressPainter extends CustomPainter {
+  _ShutterProgressPainter({required this.progress, required this.aligned});
 
   final double progress;
   final bool aligned;
-  final bool busy;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final r = size.width / 2 - 2;
-    final outer = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.4
-      ..color = PrimeColor.ink;
-    canvas.drawCircle(center, r, Paint()..color = PrimeColor.paper);
-    canvas.drawCircle(center, r, outer);
+    final center = size.center(Offset.zero);
+    final radius = size.width / 2 - 1;
     canvas.drawCircle(
       center,
-      r - 4.5,
+      radius,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 0.8
-        ..color = PrimeColor.ink.withValues(alpha: 0.4),
+        ..strokeWidth = aligned ? 1.8 : 1.2
+        ..color = aligned ? PrimeColor.white70 : PrimeColor.white24,
     );
-
-    // 六叶光圈：对齐时开合更大。
-    final iris = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
-      ..color = PrimeColor.ink.withValues(alpha: 0.28);
-    final innerR = aligned ? r - 13 : r - 20;
-    for (int i = 0; i < 6; i++) {
-      final a = i * math.pi / 3;
-      canvas.drawLine(
-        center + Offset(math.cos(a), math.sin(a)) * (r - 6),
-        center + Offset(math.cos(a), math.sin(a)) * innerR,
-        iris,
-      );
-    }
-
-    // 对齐进度：薄荷弧。
     canvas.drawArc(
-      Rect.fromCircle(center: center, radius: r - 7),
+      Rect.fromCircle(center: center, radius: radius - 4),
       -math.pi / 2,
       math.pi * 2 * progress.clamp(0.0, 1.0),
       false,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.2
+        ..strokeWidth = 1.4
         ..strokeCap = StrokeCap.round
-        ..color = aligned
-            ? PrimeColor.mintDeep
-            : PrimeColor.mint.withValues(alpha: 0.85),
+        ..color = aligned ? PrimeColor.white : PrimeColor.white54,
     );
-
-    if (aligned) {
-      canvas.drawCircle(
-        center,
-        r - 10,
-        Paint()..color = PrimeColor.mint.withValues(alpha: 0.22),
-      );
-    }
   }
 
   @override
-  bool shouldRepaint(covariant _ShutterPainter oldDelegate) =>
-      oldDelegate.progress != progress ||
-      oldDelegate.aligned != aligned ||
-      oldDelegate.busy != busy;
+  bool shouldRepaint(covariant _ShutterProgressPainter oldDelegate) =>
+      oldDelegate.progress != progress || oldDelegate.aligned != aligned;
 }
 
-// ------------------------------------------------------------- notebook
+// ---------------------------------------------------------------- sheets
 
-class _NotebookSheet extends StatelessWidget {
-  const _NotebookSheet();
+class _PlanSheet extends StatelessWidget {
+  const _PlanSheet({
+    required this.plans,
+    required this.selectedIndex,
+    required this.sceneAsset,
+    required this.onSelect,
+  });
+
+  final List<_ShotPlan> plans;
+  final int selectedIndex;
+  final String? sceneAsset;
+  final ValueChanged<int> onSelect;
 
   @override
   Widget build(BuildContext context) {
-    return DraggableScrollableSheet(
-      initialChildSize: 0.62,
-      minChildSize: 0.42,
-      maxChildSize: 0.9,
-      builder: (context, controller) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: PrimeColor.paper,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(6)),
-          ),
-          child: PaperBackground(
-            child: ListView(
-              controller: controller,
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-              children: [
-                Center(
-                  child: Container(
-                    width: 44,
-                    height: 3,
-                    decoration: BoxDecoration(
-                      color: PrimeColor.inkFaint,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
+    return Container(
+      decoration: const BoxDecoration(
+        color: PrimeColor.black,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 10, 18, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 3,
+                  decoration: BoxDecoration(
+                    color: PrimeColor.white24,
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
-                const SizedBox(height: 14),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '构图手记 · 第 01 页',
-                            style: TextStyle(
-                              fontFamily: PrimeFont.hand,
-                              fontFamilyFallback: PrimeFont.handFallback,
-                              fontSize: 22,
-                              color: PrimeColor.ink,
-                              height: 1.2,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          const Text(
-                            '口诀一次只说一句，先站对位置，再按快门。',
-                            style: TextStyle(
-                              fontSize: 11,
-                              height: 1.7,
-                              color: PrimeColor.inkSoft,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Image.asset(
-                      'assets/brand/xiaoying_bust.png',
-                      width: 74,
-                      height: 86,
-                      fit: BoxFit.cover,
-                    ),
-                  ],
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'PRIME 的 3 种拍法',
+                style: TextStyle(
+                  fontSize: 20,
+                  height: 1.2,
+                  color: PrimeColor.white,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.2,
                 ),
-                const SizedBox(height: 16),
-                const DottedRule(),
-                const SizedBox(height: 14),
-                _tip('01', '距离', '先退到主体刚好占画面 1/3 的位置。'),
-                _tip('02', '高度', '镜头降到胸口，头顶留白不超过一拳。'),
-                _tip('03', '角度', '手机竖平，别仰拍，地平线压在下方一格。'),
-                _tip('04', '焦段', '最后才动焦段，1× 先拍一张，再决定要不要 2×。'),
-              ],
-            ),
+              ),
+              const SizedBox(height: 5),
+              const Text(
+                '可以逐个试拍，多拍几种更容易出片',
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.4,
+                  color: PrimeColor.white54,
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                height: 190,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: plans.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 10),
+                  itemBuilder: (context, index) {
+                    final plan = plans[index];
+                    final selected = plan.index == selectedIndex;
+                    return GestureDetector(
+                      onTap: () => onSelect(plan.index),
+                      behavior: HitTestBehavior.opaque,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        width: 126,
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: PrimeColor.white06,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: selected
+                                ? PrimeColor.white54
+                                : PrimeColor.white12,
+                            width: selected ? 1.2 : 0.8,
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(9),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    if (sceneAsset != null)
+                                      Image.asset(
+                                        sceneAsset!,
+                                        fit: BoxFit.cover,
+                                        alignment: plan.alignment,
+                                      )
+                                    else
+                                      const ColoredBox(
+                                        color: PrimeColor.surfaceLift,
+                                      ),
+                                    const DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                          begin: Alignment.topCenter,
+                                          end: Alignment.bottomCenter,
+                                          colors: [
+                                            Color(0x00000000),
+                                            Color(0x99000000),
+                                          ],
+                                          stops: [0.55, 1.0],
+                                        ),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      left: 8,
+                                      right: 8,
+                                      bottom: 7,
+                                      child: Text(
+                                        '${index + 1}',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: PrimeColor.white,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 5),
+                              child: Text(
+                                '${index + 1}  ${plan.title}',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  height: 1.2,
+                                  color: PrimeColor.white,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 5),
+                              child: Text(
+                                '${plan.zoomLabel} · ${plan.framing}',
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  height: 1.2,
+                                  color: PrimeColor.white54,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
-        );
-      },
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsSheet extends StatelessWidget {
+  const _SettingsSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: PrimeColor.black,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 3,
+                  decoration: BoxDecoration(
+                    color: PrimeColor.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '设置',
+                  style: TextStyle(
+                    fontSize: 20,
+                    color: PrimeColor.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              _row('构图网格', '关闭'),
+              _row('保存水印', '开启'),
+              _row('版本', '0.2.0'),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
-  Widget _tip(String no, String title, String body) {
+  Widget _row(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 26,
-            height: 26,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: PrimeColor.ink.withValues(alpha: 0.6),
-                width: 1,
-              ),
-              borderRadius: BorderRadius.circular(2),
-            ),
-            child: Text(
-              no,
-              style: const TextStyle(fontSize: 9, color: PrimeColor.ink),
-            ),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 13, color: PrimeColor.white70),
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontFamily: PrimeFont.hand,
-                    fontFamilyFallback: PrimeFont.handFallback,
-                    fontSize: 14,
-                    color: PrimeColor.ink,
-                    height: 1.2,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  body,
-                  style: const TextStyle(
-                    fontSize: 10.5,
-                    height: 1.6,
-                    color: PrimeColor.inkSoft,
-                  ),
-                ),
-              ],
-            ),
+          const Spacer(),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 12, color: PrimeColor.white38),
           ),
         ],
       ),

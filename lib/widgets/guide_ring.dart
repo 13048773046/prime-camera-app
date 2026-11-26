@@ -1,22 +1,25 @@
 import 'dart:math' as math;
-import 'package:flutter/material.dart';
-import '../theme.dart';
 
-/// AR 构图环：薄荷虚线目标环 + 主体取景框 + 死区 + 扫描弧。
-/// 手册要求：死区 1.2°，收敛 0.25s，引导只做视觉提示，不遮挡主体。
+import 'package:flutter/material.dart';
+
+
+/// 黑白取景引导层，结构对齐 Doka 的 AR 构图：
+/// 主体四角框 → 中心四角星 → 虚线目标环 → 对齐后的渐变圆角裁切框。
 class GuideOverlay extends StatefulWidget {
   const GuideOverlay({
     super.key,
     required this.subjectBox,
     required this.targetBox,
     this.aligned = false,
-    this.showGrid = true,
+    this.analyzing = false,
+    this.showGrid = false,
     this.confidence = 0.62,
   });
 
   final List<double> subjectBox;
   final List<double> targetBox;
   final bool aligned;
+  final bool analyzing;
   final bool showGrid;
   final double confidence;
 
@@ -24,10 +27,11 @@ class GuideOverlay extends StatefulWidget {
   State<GuideOverlay> createState() => _GuideOverlayState();
 }
 
-class _GuideOverlayState extends State<GuideOverlay> with SingleTickerProviderStateMixin {
+class _GuideOverlayState extends State<GuideOverlay>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _scan = AnimationController(
     vsync: this,
-    duration: const Duration(seconds: 3),
+    duration: const Duration(milliseconds: 2600),
   )..repeat();
 
   @override
@@ -49,6 +53,7 @@ class _GuideOverlayState extends State<GuideOverlay> with SingleTickerProviderSt
                 subjectBox: widget.subjectBox,
                 targetBox: widget.targetBox,
                 aligned: widget.aligned,
+                analyzing: widget.analyzing,
                 showGrid: widget.showGrid,
                 scan: _scan.value,
                 confidence: widget.confidence,
@@ -66,6 +71,7 @@ class _GuidePainter extends CustomPainter {
     required this.subjectBox,
     required this.targetBox,
     required this.aligned,
+    required this.analyzing,
     required this.showGrid,
     required this.scan,
     required this.confidence,
@@ -74,15 +80,34 @@ class _GuidePainter extends CustomPainter {
   final List<double> subjectBox;
   final List<double> targetBox;
   final bool aligned;
+  final bool analyzing;
   final bool showGrid;
   final double scan;
   final double confidence;
+
+  static const List<Offset> _sparkleSpots = [
+    Offset(0.09, 0.18),
+    Offset(0.20, 0.10),
+    Offset(0.34, 0.22),
+    Offset(0.47, 0.15),
+    Offset(0.63, 0.19),
+    Offset(0.78, 0.10),
+    Offset(0.91, 0.20),
+    Offset(0.12, 0.38),
+    Offset(0.29, 0.34),
+    Offset(0.71, 0.36),
+    Offset(0.88, 0.34),
+    Offset(0.18, 0.56),
+    Offset(0.84, 0.58),
+    Offset(0.07, 0.72),
+    Offset(0.92, 0.75),
+  ];
 
   @override
   void paint(Canvas canvas, Size size) {
     if (showGrid) {
       final grid = Paint()
-        ..color = Colors.white.withValues(alpha: 0.09)
+        ..color = Colors.white.withValues(alpha: 0.05)
         ..strokeWidth = 0.7;
       for (int i = 1; i <= 2; i++) {
         final x = size.width * i / 3;
@@ -92,15 +117,16 @@ class _GuidePainter extends CustomPainter {
       }
     }
 
-    // 中心十字：极细，克制。
-    final cross = Paint()
-      ..color = Colors.white.withValues(alpha: 0.4)
-      ..strokeWidth = 0.9;
-    final c = Offset(size.width / 2, size.height / 2);
-    canvas.drawLine(c.translate(-7, 0), c.translate(-2.5, 0), cross);
-    canvas.drawLine(c.translate(2.5, 0), c.translate(7, 0), cross);
-    canvas.drawLine(c.translate(0, -7), c.translate(0, -2.5), cross);
-    canvas.drawLine(c.translate(0, 2.5), c.translate(0, 7), cross);
+    // 对齐后只保留整块圆角裁切框；主体框、目标环、准星一起退场。
+    if (aligned) {
+      _paintAlignedFrame(canvas, size);
+      return;
+    }
+
+    if (analyzing) _paintAnalyzing(canvas, size);
+
+    final center = Offset(size.width / 2, size.height / 2);
+    _paintCenterMark(canvas, center);
 
     final hasSubject = subjectBox.length == 4;
     if (hasSubject) {
@@ -121,17 +147,94 @@ class _GuidePainter extends CustomPainter {
         targetBox[2] * size.width,
         targetBox[3] * size.height,
       );
-      _paintTarget(canvas, size, rect);
+      _paintTarget(canvas, size, rect, center);
+    }
+
+  }
+
+  void _paintAnalyzing(Canvas canvas, Size size) {
+    // 四角细括号：正在读取画面。
+    final corner = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = Colors.white.withValues(alpha: 0.24);
+    const inset = 12.0;
+    const len = 16.0;
+    final rect = Rect.fromLTWH(
+      inset,
+      inset,
+      size.width - inset * 2,
+      size.height - inset * 2,
+    );
+    for (final c in [
+      rect.topLeft,
+      rect.topRight,
+      rect.bottomLeft,
+      rect.bottomRight,
+    ]) {
+      final sx = c.dx < rect.center.dx ? 1.0 : -1.0;
+      final sy = c.dy < rect.center.dy ? 1.0 : -1.0;
+      canvas.drawLine(c, c.translate(len * sx, 0), corner);
+      canvas.drawLine(c, c.translate(0, len * sy), corner);
+    }
+
+    // Doka 的分析态是满屏星点；黑白版只保留少量白色星火。
+    for (int i = 0; i < _sparkleSpots.length; i++) {
+      final p = _sparkleSpots[i];
+      final phase = scan * math.pi * 2 + i * 1.31;
+      final pulse = 0.5 + 0.5 * math.sin(phase);
+      final opacity = 0.14 + 0.30 * pulse;
+      final radius = (i % 4 == 0 ? 3.8 : 2.5) +
+          pulse * (i % 3 == 0 ? 1.0 : 0.4);
+      _paintSparkle(
+        canvas,
+        Offset(p.dx * size.width, p.dy * size.height),
+        radius,
+        Paint()..color = Colors.white.withValues(alpha: opacity),
+      );
     }
   }
 
-  void _paintSubject(Canvas canvas, Rect rect, Size frame) {
-    final len = math.min(rect.width, rect.height) * 0.30;
+  void _paintCenterMark(Canvas canvas, Offset c) {
+    final shadow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.2
+      ..color = Colors.black.withValues(alpha: 0.32);
+    _paintSparklePath(canvas, c, aligned ? 12.8 : 10.8, shadow);
+
     final paint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.6
+      ..strokeWidth = aligned ? 1.6 : 1.2
+      ..color = Colors.white.withValues(alpha: aligned ? 0.95 : 0.72);
+    _paintSparklePath(canvas, c, aligned ? 11.5 : 9.5, paint);
+
+    if (aligned) {
+      canvas.drawCircle(
+        c,
+        16,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 6
+          ..color = Colors.white.withValues(alpha: 0.10)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+      );
+    }
+    canvas.drawCircle(
+      c,
+      aligned ? 2.8 : 2.1,
+      Paint()..color = Colors.white.withValues(alpha: aligned ? 0.95 : 0.62),
+    );
+  }
+
+  void _paintSubject(Canvas canvas, Rect rect, Size frame) {
+    final len = (math.min(rect.width, rect.height) * 0.26)
+        .clamp(12.0, 26.0)
+        .toDouble();
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
       ..strokeCap = StrokeCap.round
-      ..color = PrimeColor.mint.withValues(alpha: aligned ? 1.0 : 0.9);
+      ..color = Colors.white.withValues(alpha: aligned ? 0.92 : 0.72);
 
     void corner(Offset p, double sx, double sy) {
       canvas.drawLine(p, p.translate(len * sx, 0), paint);
@@ -143,135 +246,218 @@ class _GuidePainter extends CustomPainter {
     corner(rect.bottomLeft, 1, -1);
     corner(rect.bottomRight, -1, -1);
 
-    // 识别到主体时，在框上贴一枚“拍摄主体”小签，像取景器里的标注。
     final label = TextPainter(
       text: const TextSpan(
-        text: '拍摄主体',
+        text: '主体',
         style: TextStyle(
-          fontSize: 8.5,
-          height: 1.2,
-          letterSpacing: 1.1,
-          color: PrimeColor.ink,
-          fontWeight: FontWeight.w600,
+          fontSize: 9,
+          height: 1.1,
+          letterSpacing: 1.2,
+          color: Colors.white,
+          fontWeight: FontWeight.w500,
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    final tagLeft =
-        (rect.right + 5).clamp(2.0, math.max(2.0, frame.width - label.width - 14)).toDouble();
-    final tagTop =
-        (rect.bottom + 4).clamp(2.0, math.max(2.0, frame.height - label.height - 8)).toDouble();
-    final tagRect = Rect.fromLTWH(
-      tagLeft,
-      tagTop,
-      label.width + 12,
-      label.height + 5,
+
+    final tagLeft = rect.left
+        .clamp(2.0, math.max(2.0, frame.width - label.width - 14))
+        .toDouble();
+    final tagTop = (rect.bottom + 5)
+        .clamp(2.0, math.max(2.0, frame.height - label.height - 7))
+        .toDouble();
+    final tagRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(tagLeft, tagTop, label.width + 12, label.height + 7),
+      const Radius.circular(4),
     );
-    canvas.drawRect(
-      tagRect,
-      Paint()..color = PrimeColor.paper.withValues(alpha: 0.9),
-    );
-    canvas.drawRect(
+    canvas.drawRRect(tagRect, Paint()..color = Colors.black.withValues(alpha: 0.72));
+    canvas.drawRRect(
       tagRect,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 0.8
-        ..color = PrimeColor.ink.withValues(alpha: 0.7),
+        ..color = Colors.white.withValues(alpha: 0.18),
     );
-    label.paint(canvas, Offset(tagRect.left + 6, tagRect.top + 2.5));
+    label.paint(canvas, Offset(tagRect.left + 6, tagRect.top + 3.5));
   }
 
-  void _paintTarget(Canvas canvas, Size frame, Rect rect) {
-    final center = rect.center;
-    // 瞄准环：圆形，半径与会话尺寸挂钩，不再拉成椭圆。
-    final radius = math.min(frame.width, frame.height) * 0.19;
-    final safeCenter = Offset(
-      center.dx.clamp(radius + 6, frame.width - radius - 6),
-      center.dy.clamp(radius + 22, frame.height - radius - 30),
+  void _paintTarget(Canvas canvas, Size frame, Rect rect, Offset center) {
+    final radius = (math.min(frame.width, frame.height) * 0.165)
+        .clamp(38.0, 64.0)
+        .toDouble();
+    final target = Offset(
+      rect.center.dx.clamp(radius + 8, frame.width - radius - 8).toDouble(),
+      rect.center.dy.clamp(radius + 28, frame.height - radius - 34).toDouble(),
     );
 
-    // 构图安全区：四角很淡的裁切提示。
-    final safe = Rect.fromLTWH(frame.width * 0.07, frame.height * 0.06, frame.width * 0.86, frame.height * 0.70);
-    final safePaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.8
-      ..color = Colors.white.withValues(alpha: 0.22);
-    const safeLen = 14.0;
-    for (final corner in [safe.topLeft, safe.topRight, safe.bottomLeft, safe.bottomRight]) {
-      final sx = corner.dx < safe.center.dx ? 1.0 : -1.0;
-      final sy = corner.dy < safe.center.dy ? 1.0 : -1.0;
-      canvas.drawLine(corner, corner.translate(safeLen * sx, 0), safePaint);
-      canvas.drawLine(corner, corner.translate(0, safeLen * sy), safePaint);
+    // 中心 → 目标环的虚线，方向感来自 Doka 的虚线引导。
+    if (!aligned) {
+      _dashedLine(
+        canvas,
+        center,
+        target,
+        Paint()
+          ..strokeWidth = 0.8
+          ..color = Colors.white.withValues(alpha: 0.24),
+      );
+      canvas.drawCircle(
+        center + (target - center) * 0.34,
+        1.8,
+        Paint()..color = Colors.white.withValues(alpha: 0.34),
+      );
     }
 
-    // 死区：1.2° 对应的内环。
     final dead = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 0.8
-      ..color = PrimeColor.mint.withValues(alpha: aligned ? 0.5 : 0.26);
-    canvas.drawCircle(safeCenter, radius * 0.78, dead);
+      ..color = Colors.white.withValues(alpha: aligned ? 0.28 : 0.12);
+    canvas.drawCircle(target, radius * 0.76, dead);
 
-    // 主环：手绘感的短虚线。
+    final shadow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.2
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.black.withValues(alpha: 0.30);
+    _dashedCircle(canvas, target, radius, shadow, dash: 7, gap: 6);
+
     final ring = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = aligned ? 2.4 : 1.9
+      ..strokeWidth = aligned ? 1.9 : 1.4
       ..strokeCap = StrokeCap.round
-      ..color = aligned ? PrimeColor.mint : PrimeColor.mint.withValues(alpha: 0.88);
+      ..color = Colors.white.withValues(alpha: aligned ? 0.92 : 0.68);
     if (aligned) {
       canvas.drawCircle(
-        safeCenter,
+        target,
         radius,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 8
-          ..color = PrimeColor.mint.withValues(alpha: 0.2)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+          ..strokeWidth = 7
+          ..color = Colors.white.withValues(alpha: 0.13)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
       );
-    }
-    _dashedCircle(canvas, safeCenter, radius, ring, dash: aligned ? 7 : 10, gap: aligned ? 3.5 : 7);
-
-    // 四向刻度 + 八个 1.2° 小刻度。
-    final tick = Paint()..color = PrimeColor.mint.withValues(alpha: 0.8)..strokeWidth = 1.1;
-    for (int i = 0; i < 8; i++) {
-      final a = i * math.pi / 4;
-      final p1 = safeCenter + Offset(math.cos(a), math.sin(a)) * (radius - 3);
-      final p2 = safeCenter + Offset(math.cos(a), math.sin(a)) * (radius + 2);
-      canvas.drawLine(p1, p2, i % 2 == 0 ? tick : (Paint()..color = PrimeColor.mint.withValues(alpha: 0.4)..strokeWidth = 0.9));
+      canvas.drawCircle(target, radius, ring);
+    } else {
+      _dashedCircle(canvas, target, radius, ring, dash: 7, gap: 6);
     }
 
-    // 扫描弧：模型持续收敛的示意。
-    if (!aligned) {
+    final tick = Paint()
+      ..color = Colors.white.withValues(alpha: aligned ? 0.9 : 0.55)
+      ..strokeWidth = 1;
+    for (int i = 0; i < 4; i++) {
+      final a = i * math.pi / 2;
+      final p1 = target + Offset(math.cos(a), math.sin(a)) * (radius - 4);
+      final p2 = target + Offset(math.cos(a), math.sin(a)) * (radius + 3);
+      canvas.drawLine(p1, p2, tick);
+    }
+
+    if (!aligned && analyzing) {
       final sweep = Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.0
+        ..strokeWidth = 2
         ..strokeCap = StrokeCap.round
-        ..color = PrimeColor.mint.withValues(alpha: 0.55);
+        ..color = Colors.white.withValues(alpha: 0.32);
       final start = scan * math.pi * 2 - math.pi / 2;
       canvas.drawArc(
-        Rect.fromCircle(center: safeCenter, radius: radius),
+        Rect.fromCircle(center: target, radius: radius + 2),
         start,
-        0.45,
+        0.5,
         false,
         sweep,
       );
-      final head = safeCenter + Offset(math.cos(start + 0.45), math.sin(start + 0.45)) * radius;
-      canvas.drawCircle(head, 2.2, Paint()..color = Colors.white.withValues(alpha: 0.85));
     }
 
-    // 环心：十字 + 对齐点。
-    final core = Paint()..color = aligned ? PrimeColor.mint : Colors.white.withValues(alpha: 0.75);
-    canvas.drawCircle(safeCenter, aligned ? 4.2 : 2.6, core);
-    final hair = Paint()..color = Colors.white.withValues(alpha: 0.35)..strokeWidth = 0.8;
-    canvas.drawLine(safeCenter.translate(-radius * 0.55, 0), safeCenter.translate(-radius * 0.32, 0), hair);
-    canvas.drawLine(safeCenter.translate(radius * 0.32, 0), safeCenter.translate(radius * 0.55, 0), hair);
-    canvas.drawLine(safeCenter.translate(0, -radius * 0.55), safeCenter.translate(0, -radius * 0.32), hair);
-    canvas.drawLine(safeCenter.translate(0, radius * 0.32), safeCenter.translate(0, radius * 0.55), hair);
-
+    canvas.drawCircle(
+      target,
+      aligned ? 3.2 : 2.2,
+      Paint()..color = Colors.white.withValues(alpha: aligned ? 0.95 : 0.7),
+    );
   }
 
-  void _dashedCircle(Canvas canvas, Offset center, double radius, Paint paint, {required double dash, required double gap}) {
-    final circumference = 2 * math.pi * radius;
-    final count = (circumference / (dash + gap)).floor();
+  void _paintAlignedFrame(Canvas canvas, Size size) {
+    const inset = 12.0;
+    final rect = Rect.fromLTWH(
+      inset,
+      inset,
+      size.width - inset * 2,
+      size.height - inset * 2,
+    );
+    final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(22));
+    final shader = const LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [
+        Color(0xE6FFFFFF),
+        Color(0x33FFFFFF),
+        Color(0xCCFFFFFF),
+        Color(0x22FFFFFF),
+      ],
+      stops: [0.0, 0.38, 0.72, 1.0],
+    ).createShader(rect);
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 12
+        ..color = const Color(0x12FFFFFF)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16),
+    );
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 5
+        ..color = const Color(0x1FFFFFFF)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+    );
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..shader = shader,
+    );
+
+    final corner = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = Colors.white.withValues(alpha: 0.42);
+    const len = 16.0;
+    for (final c in [
+      rect.topLeft,
+      rect.topRight,
+      rect.bottomLeft,
+      rect.bottomRight,
+    ]) {
+      final sx = c.dx < rect.center.dx ? 1.0 : -1.0;
+      final sy = c.dy < rect.center.dy ? 1.0 : -1.0;
+      canvas.drawLine(c, c.translate(len * sx, 0), corner);
+      canvas.drawLine(c, c.translate(0, len * sy), corner);
+    }
+  }
+
+  void _paintSparkle(Canvas canvas, Offset center, double radius, Paint paint) {
+    _paintSparklePath(canvas, center, radius, paint);
+  }
+
+  void _paintSparklePath(Canvas canvas, Offset c, double r, Paint paint) {
+    final path = Path()
+      ..moveTo(c.dx, c.dy - r)
+      ..quadraticBezierTo(c.dx + r * 0.18, c.dy - r * 0.18, c.dx + r, c.dy)
+      ..quadraticBezierTo(c.dx + r * 0.18, c.dy + r * 0.18, c.dx, c.dy + r)
+      ..quadraticBezierTo(c.dx - r * 0.18, c.dy + r * 0.18, c.dx - r, c.dy)
+      ..quadraticBezierTo(c.dx - r * 0.18, c.dy - r * 0.18, c.dx, c.dy - r);
+    canvas.drawPath(path, paint);
+  }
+
+  void _dashedCircle(
+    Canvas canvas,
+    Offset center,
+    double radius,
+    Paint paint, {
+    required double dash,
+    required double gap,
+  }) {
+    final count = (2 * math.pi * radius / (dash + gap)).floor();
     final step = 2 * math.pi / count;
     for (int i = 0; i < count; i++) {
       canvas.drawArc(
@@ -284,10 +470,28 @@ class _GuidePainter extends CustomPainter {
     }
   }
 
+  void _dashedLine(Canvas canvas, Offset from, Offset to, Paint paint) {
+    final delta = to - from;
+    final distance = delta.distance;
+    if (distance < 12) return;
+    final unit = delta / distance;
+    const dash = 6.0;
+    const gap = 6.0;
+    for (double d = 18; d < distance - 18; d += dash + gap) {
+      canvas.drawLine(
+        from + unit * d,
+        from + unit * math.min(d + dash, distance - 18),
+        paint,
+      );
+    }
+  }
+
   @override
   bool shouldRepaint(covariant _GuidePainter oldDelegate) =>
       oldDelegate.scan != scan ||
       oldDelegate.aligned != aligned ||
+      oldDelegate.analyzing != analyzing ||
       oldDelegate.targetBox != targetBox ||
-      oldDelegate.subjectBox != subjectBox;
+      oldDelegate.subjectBox != subjectBox ||
+      oldDelegate.showGrid != showGrid;
 }

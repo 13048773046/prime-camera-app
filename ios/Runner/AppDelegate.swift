@@ -71,7 +71,33 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       name: UIApplication.willResignActiveNotification,
       object: nil
     )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleSessionInterrupted),
+      name: .AVCaptureSessionWasInterrupted,
+      object: session
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleSessionInterruptionEnded),
+      name: .AVCaptureSessionInterruptionEnded,
+      object: session
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleSessionRuntimeError),
+      name: .AVCaptureSessionRuntimeError,
+      object: session
+    )
     startMotionTracking()
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
+    motionManager.stopDeviceMotionUpdates()
+    if textureId >= 0 {
+      registry.unregisterTexture(textureId)
+    }
   }
 
   /// 手机水平角：用于“手机回正”口令，死区 1.2°。
@@ -114,6 +140,32 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     }
   }
 
+  @objc private func handleSessionInterrupted() {
+    // 电话、控制中心等抢占相机时系统会自行停会话；把状态同步成未运行，
+    // 等 interruptionEnded 再恢复，避免用 isRunning=true 造成永久黑屏。
+    sessionQueue.async { [weak self] in
+      self?.isRunning = false
+    }
+  }
+
+  @objc private func handleSessionInterruptionEnded() {
+    sessionQueue.async { [weak self] in
+      self?.startIfNeeded()
+    }
+  }
+
+  @objc private func handleSessionRuntimeError(_ notification: Notification) {
+    sessionQueue.async { [weak self] in
+      guard let self = self else { return }
+      self.isRunning = false
+      guard self.isConfigured else { return }
+      // Media services 偶发 reset；稍等系统恢复后重建 running 状态。
+      self.sessionQueue.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+        self?.startIfNeeded()
+      }
+    }
+  }
+
   // MARK: - FlutterTexture
 
   func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
@@ -135,12 +187,12 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       openSettings(result: result)
     case "setZoom":
       let zoom = (call.arguments as? [String: Any])?["zoom"] as? NSNumber
-      applyZoom(CGFloat(truncating: zoom ?? 1.0))
-      result(nil)
+      applyZoom(CGFloat(truncating: zoom ?? 1.0), result: result)
     case "switchCamera":
       switchCamera(result: result)
     case "takePhoto":
-      takePhoto(result: result)
+      let flash = (call.arguments as? [String: Any])?["flash"] as? Bool ?? false
+      takePhoto(flash: flash, result: result)
     case "saveToAlbum":
       saveToAlbum(call: call, result: result)
     case "share":
@@ -164,22 +216,35 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
           }
         }
       }
-    case .denied, .restricted:
+    case .denied:
       result(["status": "denied"])
+    case .restricted:
+      result(["status": "restricted"])
     @unknown default:
       result(["status": "denied"])
     }
   }
 
   private func requestPermission(result: @escaping FlutterResult) {
-    AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-      DispatchQueue.main.async {
-        if granted {
-          self?.prepareAndReply(result)
-        } else {
-          result(["status": "denied"])
+    switch AVCaptureDevice.authorizationStatus(for: .video) {
+    case .authorized:
+      prepareAndReply(result)
+    case .notDetermined:
+      AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+        DispatchQueue.main.async {
+          if granted {
+            self?.prepareAndReply(result)
+          } else {
+            result(["status": "denied"])
+          }
         }
       }
+    case .denied:
+      result(["status": "denied"])
+    case .restricted:
+      result(["status": "restricted"])
+    @unknown default:
+      result(["status": "denied"])
     }
   }
 
@@ -187,7 +252,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     sessionQueue.async { [weak self] in
       guard let self = self else { return }
       do {
-        try self.configureIfNeeded(position: self.currentPosition)
+        try self.configureIfNeeded(position: self.currentPosition, zoom: self.currentZoom)
         self.applyConnectionSettings()
         self.startIfNeeded()
         DispatchQueue.main.async {
@@ -207,33 +272,71 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
 
   // MARK: - Session
 
-  private static func makeDevice(position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-    if position == .back {
-      if #available(iOS 13.0, *) {
-        if let triple = AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back) {
-          return triple
-        }
-        if let dualWide = AVCaptureDevice.default(.builtInDualWideCamera, for: .video, position: .back) {
-          return dualWide
-        }
-        if let dual = AVCaptureDevice.default(.builtInDualCamera, for: .video, position: .back) {
-          return dual
-        }
+  private static func makeBackWideDevice() -> AVCaptureDevice? {
+    if #available(iOS 13.0, *) {
+      if let triple = AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back) {
+        return triple
       }
-      return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+      if let dualWide = AVCaptureDevice.default(.builtInDualWideCamera, for: .video, position: .back) {
+        return dualWide
+      }
+      if let dual = AVCaptureDevice.default(.builtInDualCamera, for: .video, position: .back) {
+        return dual
+      }
+    }
+    return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+  }
+
+  private static func makeUltraWideDevice() -> AVCaptureDevice? {
+    guard #available(iOS 13.0, *) else { return nil }
+    return AVCaptureDevice.default(.builtInUltraWideCamera, for: .video, position: .back)
+  }
+
+  /// 0.5× 需要超广角；虚拟三摄的 videoZoomFactor 下限通常是 1.0，
+  /// 所以不能用 zoomFactor=0.5，而是直接切换到超广角输入，再以 1.0 作为 0.5×。
+  private static func makeDevice(
+    position: AVCaptureDevice.Position,
+    zoom: CGFloat = 1.0
+  ) -> AVCaptureDevice? {
+    if position == .back, zoom < 0.9, let ultraWide = makeUltraWideDevice() {
+      return ultraWide
+    }
+    if position == .back {
+      return makeBackWideDevice()
     }
     return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
   }
 
-  private func configureIfNeeded(position: AVCaptureDevice.Position) throws {
+  private func configureIfNeeded(position: AVCaptureDevice.Position, zoom: CGFloat) throws {
     if isConfigured { return }
 
     session.beginConfiguration()
-    defer { session.commitConfiguration() }
-    // 预览走 1080p 视频流，拍照仍由 photoOutput 输出全分辨率，兼顾流畅与画质。
-    session.sessionPreset = .high
+    var didCommit = false
+    defer {
+      if !didCommit {
+        if let input = currentInput, session.inputs.contains(where: { $0 === input }) {
+          session.removeInput(input)
+        }
+        if session.outputs.contains(where: { $0 === videoOutput }) {
+          session.removeOutput(videoOutput)
+        }
+        if session.outputs.contains(where: { $0 === photoOutput }) {
+          session.removeOutput(photoOutput)
+        }
+        currentInput = nil
+        currentDevice = nil
+        session.commitConfiguration()
+      }
+    }
 
-    guard let device = PrimeCameraHost.makeDevice(position: position) else {
+    // 固定 1080p 16:9 视频流：预览纹理尺寸稳定，Vision 坐标与 3:4 裁切才能一一对应。
+    if session.canSetSessionPreset(.hd1920x1080) {
+      session.sessionPreset = .hd1920x1080
+    } else {
+      session.sessionPreset = .high
+    }
+
+    guard let device = PrimeCameraHost.makeDevice(position: position, zoom: zoom) else {
       throw NSError(
         domain: "com.prime.camera",
         code: 1,
@@ -253,13 +356,6 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     currentDevice = device
     currentPosition = position
     currentZoom = 1.0
-    do {
-      try device.lockForConfiguration()
-      device.videoZoomFactor = 1.0
-      device.unlockForConfiguration()
-    } catch {
-      // 少数机型不支持改 zoom，预览与拍照不受影响。
-    }
 
     videoOutput.alwaysDiscardsLateVideoFrames = true
     videoOutput.videoSettings = [
@@ -283,9 +379,13 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       )
     }
     session.addOutput(photoOutput)
+    photoOutput.isHighResolutionCaptureEnabled = true
 
     isConfigured = true
     applyConnectionSettings()
+    currentZoom = setZoomFactor(on: device, logicalZoom: zoom)
+    session.commitConfiguration()
+    didCommit = true
   }
 
   private func applyConnectionSettings() {
@@ -293,7 +393,8 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       configure(connection: connection, mirrored: currentPosition == .front)
     }
     if let connection = photoOutput.connection(with: .video) {
-      configure(connection: connection, mirrored: false)
+      // 前置成片跟预览一致做镜像，避免拍完左右反过来。
+      configure(connection: connection, mirrored: currentPosition == .front)
     }
   }
 
@@ -376,8 +477,8 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       let human = humans.max { area(of: $0.boundingBox) < area(of: $1.boundingBox) }
       let face = faces.max { area(of: $0.boundingBox) < area(of: $1.boundingBox) }
       sendGuidance(
-        box: human.map { normalizeVisible($0.boundingBox) },
-        face: face.map { normalizeVisible($0.boundingBox) },
+        box: human.map { normalizeVisible($0.boundingBox, buffer: pixelBuffer) },
+        face: face.map { normalizeVisible($0.boundingBox, buffer: pixelBuffer) },
         roll: roll,
         pitch: pitch,
         buffer: pixelBuffer
@@ -391,14 +492,21 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     rect.width * rect.height
   }
 
-  /// 预览是 9:16 纹理按 3:4 裁切显示，只保留中间 75% 高度；坐标同步映射，避免框偏。
-  private func normalizeVisible(_ box: CGRect) -> [Double] {
-    let cropTop = 0.125
-    let cropHeight = 0.75
+  /// 取景窗固定 3:4。根据实际纹理比例算中间裁切高度，9:16 是 75%，
+  /// 4:3 则是整幅；Vision 坐标随之映射，避免换机型后框上下偏。
+  private func normalizeVisible(_ box: CGRect, buffer: CVPixelBuffer) -> [Double] {
+    let width = CGFloat(CVPixelBufferGetWidth(buffer))
+    let height = CGFloat(CVPixelBufferGetHeight(buffer))
+    var visibleHeight: CGFloat = 0.75
+    if width > 0, height > 0 {
+      visibleHeight = min(1.0, (width * 4.0 / 3.0) / height)
+    }
+    let visible = Double(visibleHeight)
+    let cropTop = (1.0 - visible) / 2.0
     let left = max(0, min(1, Double(box.minX)))
     let right = max(0, min(1, Double(box.maxX)))
-    let top = max(0, min(1, (1.0 - Double(box.maxY) - cropTop) / cropHeight))
-    let bottom = max(0, min(1, (1.0 - Double(box.minY) - cropTop) / cropHeight))
+    let top = max(0, min(1, (1.0 - Double(box.maxY) - cropTop) / visible))
+    let bottom = max(0, min(1, (1.0 - Double(box.minY) - cropTop) / visible))
     return [left, top, max(0, right - left), max(0, bottom - top)]
   }
 
@@ -433,69 +541,138 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
 
   // MARK: - Zoom / lens
 
-  private func applyZoom(_ zoom: CGFloat) {
-    currentZoom = zoom
+  private func applyZoom(_ zoom: CGFloat, result: @escaping FlutterResult) {
+    let requested = max(0.5, min(6.0, zoom))
     sessionQueue.async { [weak self] in
-      guard let self = self, let device = self.currentDevice else { return }
-      do {
-        try device.lockForConfiguration()
-        let lower = device.minAvailableVideoZoomFactor
-        let upper = device.maxAvailableVideoZoomFactor
-        device.videoZoomFactor = max(lower, min(upper, zoom))
-        device.unlockForConfiguration()
-      } catch {
-        // 忽略：镜头可能正在切换。
+      guard let self = self else { return }
+      guard self.isConfigured else {
+        DispatchQueue.main.async { result(["zoom": self.currentZoom]) }
+        return
+      }
+
+      let target = PrimeCameraHost.makeDevice(position: self.currentPosition, zoom: requested)
+      if let target = target, target.uniqueID != self.currentDevice?.uniqueID {
+        _ = self.replaceInput(with: target)
+      }
+      let actual = self.currentDevice.map {
+        self.setZoomFactor(on: $0, logicalZoom: requested)
+      } ?? self.currentZoom
+      self.currentZoom = actual
+      DispatchQueue.main.async {
+        result([
+          "zoom": actual,
+          "position": self.currentPosition == .back ? "back" : "front",
+        ])
       }
     }
+  }
+
+  /// 返回“相对广角”的逻辑倍率：超广角设备的 factor=1.0 对应 0.5×。
+  private func setZoomFactor(on device: AVCaptureDevice, logicalZoom: CGFloat) -> CGFloat {
+    let isUltraWide = device.deviceType == .builtInUltraWideCamera
+    let minFactor = max(1.0, device.minAvailableVideoZoomFactor)
+    let maxFactor = min(device.maxAvailableVideoZoomFactor, 6.0)
+    let desiredFactor = isUltraWide ? logicalZoom / 0.5 : logicalZoom
+    var actualFactor = max(minFactor, min(maxFactor, desiredFactor))
+    do {
+      try device.lockForConfiguration()
+      if device.isFocusModeSupported(.continuousAutoFocus) {
+        device.focusMode = .continuousAutoFocus
+      }
+      device.videoZoomFactor = actualFactor
+      device.unlockForConfiguration()
+    } catch {
+      actualFactor = device.videoZoomFactor
+    }
+    return isUltraWide ? actualFactor * 0.5 : actualFactor
+  }
+
+  /// 在运行中的 session 上换输入；失败会把旧输入装回去，避免切镜头后黑屏。
+  @discardableResult
+  private func replaceInput(
+    with device: AVCaptureDevice,
+    position: AVCaptureDevice.Position? = nil
+  ) -> Bool {
+    guard let newInput = try? AVCaptureDeviceInput(device: device) else { return false }
+    let oldInput = currentInput
+    session.beginConfiguration()
+    if let oldInput = oldInput, session.inputs.contains(where: { $0 === oldInput }) {
+      session.removeInput(oldInput)
+    }
+    let added = session.canAddInput(newInput)
+    if added {
+      session.addInput(newInput)
+      currentInput = newInput
+      currentDevice = device
+      if let position = position {
+        currentPosition = position
+      }
+    } else if let oldInput = oldInput, session.canAddInput(oldInput) {
+      session.addInput(oldInput)
+      currentInput = oldInput
+    }
+    session.commitConfiguration()
+    if added {
+      applyConnectionSettings()
+    }
+    return added
   }
 
   private func switchCamera(result: @escaping FlutterResult) {
     sessionQueue.async { [weak self] in
       guard let self = self else { return }
-      let newPosition: AVCaptureDevice.Position = self.currentPosition == .back ? .front : .back
-      guard
-        let device = PrimeCameraHost.makeDevice(position: newPosition),
-        let input = try? AVCaptureDeviceInput(device: device)
-      else {
-        DispatchQueue.main.async { result(FlutterError(code: "no-camera", message: "切换镜头失败", details: nil)) }
+      let newPosition: AVCaptureDevice.Position =
+        self.currentPosition == .back ? .front : .back
+      let requested = max(0.5, self.currentZoom)
+      guard let device = PrimeCameraHost.makeDevice(position: newPosition, zoom: requested) else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "no-camera", message: "切换镜头失败", details: nil))
+        }
         return
       }
-
-      self.session.beginConfiguration()
-      if let oldInput = self.currentInput {
-        self.session.removeInput(oldInput)
+      guard self.replaceInput(with: device, position: newPosition) else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "no-camera", message: "找不到可用镜头", details: nil))
+        }
+        return
       }
-      if self.session.canAddInput(input) {
-        self.session.addInput(input)
-        self.currentInput = input
-        self.currentDevice = device
-        self.currentPosition = newPosition
+      let actual = self.setZoomFactor(on: device, logicalZoom: requested)
+      self.currentZoom = actual
+      DispatchQueue.main.async {
+        result([
+          "position": newPosition == .back ? "back" : "front",
+          "zoom": actual,
+        ])
       }
-      self.session.commitConfiguration()
-      self.applyConnectionSettings()
-
-      do {
-        try device.lockForConfiguration()
-        device.videoZoomFactor = max(device.minAvailableVideoZoomFactor, min(device.maxAvailableVideoZoomFactor, 1.0))
-        device.unlockForConfiguration()
-      } catch {}
-
-      DispatchQueue.main.async { result(nil) }
     }
   }
 
   // MARK: - Photo
 
-  private func takePhoto(result: @escaping FlutterResult) {
+  private func takePhoto(flash: Bool, result: @escaping FlutterResult) {
     sessionQueue.async { [weak self] in
       guard let self = self, self.isConfigured else {
         DispatchQueue.main.async { result(nil) }
         return
       }
+      guard self.photoOutput.connection(with: .video) != nil else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "capture", message: "相机还没准备好", details: nil))
+        }
+        return
+      }
 
-      let settings = AVCapturePhotoSettings()
-      settings.flashMode = .off
-      settings.photoQualityPrioritization = .speed
+      let settings: AVCapturePhotoSettings
+      if self.photoOutput.availablePhotoCodecTypes.contains(.jpeg) {
+        settings = AVCapturePhotoSettings(format: [
+          AVVideoCodecKey: AVVideoCodecType.jpeg
+        ])
+      } else {
+        settings = AVCapturePhotoSettings()
+      }
+      settings.flashMode = (flash && self.currentDevice?.hasFlash == true) ? .on : .off
+      settings.photoQualityPrioritization = .quality
+      settings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
 
       let id = settings.uniqueID
       let delegate = PrimePhotoDelegate { [weak self] photo, error in
@@ -544,6 +721,10 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       return
     }
     let url = URL(fileURLWithPath: path)
+    guard FileManager.default.fileExists(atPath: path) else {
+      result(false)
+      return
+    }
     PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
       guard status == .authorized || status == .limited else {
         DispatchQueue.main.async { result(false) }
