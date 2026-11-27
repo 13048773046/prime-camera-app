@@ -35,15 +35,14 @@ void main() {
       ),
     );
     await tester.pump(const Duration(milliseconds: 300));
-    // 默认是通用场景；切到人像后再接收原生人体框。
-    expect(find.text('正在读取画面构图'), findsOneWidget);
-    expect(find.text('请稳住手机，不要移动'), findsOneWidget);
+    // 默认是通用场景，先显示阶段性的“稳住手机”小提示。
+    expect(find.text('稳住手机'), findsOneWidget);
+    expect(find.text('正在识别主体与场景'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('scene-portrait')));
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('正在进行人像构图分析'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 2000));
+    expect(find.text('识别完成'), findsOneWidget);
 
-    await tester.pump(const Duration(milliseconds: 1200));
     final codec = const StandardMethodCodec();
     await messenger.handlePlatformMessage(
       channel.name,
@@ -64,9 +63,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('构图已锁定'), findsOneWidget);
-    expect(find.text('对齐了 · 可以按快门'), findsOneWidget);
-    expect(find.text('构图已锁定 · 直接出片'), findsOneWidget);
-    expect(find.text('切换构图方案'), findsOneWidget);
+    expect(find.text('可以按快门'), findsOneWidget);
+    expect(find.text('全身 · 切换构图'), findsOneWidget);
 
     // 用户往一个方向移动手机后，主体框变化，口令必须跟着变；
     // 这是“移动位置没反应”的回归测试：不能一直停在上一条口令。
@@ -88,8 +86,8 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 100));
 
+    expect(find.text('构图建议'), findsOneWidget);
     expect(find.text('手机往左带一点，把人物放进环'), findsOneWidget);
     expect(find.text('构图已锁定'), findsNothing);
-    expect(find.text('对齐了 · 可以按快门'), findsNothing);
   });
 }

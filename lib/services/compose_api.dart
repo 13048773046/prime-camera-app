@@ -71,7 +71,7 @@ class ComposeApi {
           body: jsonEncode({
             'image': imageBase64,
             'mode': mode,
-            'device': {'lens': 'wide', 'zoom': zoom, 'aspect': '9:16'},
+            'device': {'lens': 'wide', 'zoom': zoom, 'aspect': '3:4'},
             'tilt': tilt,
             'roll': roll,
           }),

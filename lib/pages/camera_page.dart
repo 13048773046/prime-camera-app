@@ -22,6 +22,23 @@ class CameraPage extends StatefulWidget {
   State<CameraPage> createState() => _CameraPageState();
 }
 
+enum CaptureRatio { threeFour, oneOne, sixteenNine }
+
+extension CaptureRatioX on CaptureRatio {
+  String get label => switch (this) {
+    CaptureRatio.threeFour => '3:4',
+    CaptureRatio.oneOne => '1:1',
+    CaptureRatio.sixteenNine => '16:9',
+  };
+
+  /// 预览高 / 宽。
+  double get heightOverWidth => switch (this) {
+    CaptureRatio.threeFour => 4 / 3,
+    CaptureRatio.oneOne => 1,
+    CaptureRatio.sixteenNine => 16 / 9,
+  };
+}
+
 class _ShotPlan {
   const _ShotPlan({
     required this.index,
@@ -47,6 +64,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   bool _aligned = false;
   double _alignProgress = 0.12;
   SceneMode _scene = SceneMode.general;
+  CaptureRatio _ratio = CaptureRatio.threeFour;
   int _zoomIndex = 1;
   bool _capturing = false;
   bool _flash = false;
@@ -58,6 +76,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   Timer? _alignTimer;
   Timer? _analyzeTimer;
   Timer? _frameWatchdog;
+  Timer? _promptTimer;
   StreamSubscription<GuidanceFrame>? _guidanceSub;
   StreamSubscription<CameraFrameTick>? _frameSub;
   final LiveComposer _composer = const LiveComposer();
@@ -68,6 +87,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   int _lastGuidanceTs = 0;
   int _lastFrameTs = 0;
   bool _wasAligned = false;
+  String? _promptTitle;
+  String? _promptSubtitle;
+  String? _lastActionLabel;
 
   static const List<double> _zoomValues = [0.5, 1.0, 2.0, 3.0];
   static const List<String> _zoomLabels = ['.5', '1x', '2', '3'];
@@ -96,6 +118,60 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     ),
   ];
 
+  static const List<_ShotPlan> _streetPlans = [
+    _ShotPlan(
+      index: 1,
+      title: '街道全景',
+      zoomLabel: '1×',
+      framing: '右三分',
+      alignment: Alignment.centerRight,
+    ),
+    _ShotPlan(
+      index: 2,
+      title: '门洞框景',
+      zoomLabel: '2×',
+      framing: '居中',
+      alignment: Alignment.center,
+    ),
+    _ShotPlan(
+      index: 3,
+      title: '局部细节',
+      zoomLabel: '3×',
+      framing: '居中',
+      alignment: Alignment.topCenter,
+    ),
+  ];
+
+  static const List<_ShotPlan> _generalPlans = [
+    _ShotPlan(
+      index: 1,
+      title: '环境居中',
+      zoomLabel: '1×',
+      framing: '居中',
+      alignment: Alignment.center,
+    ),
+    _ShotPlan(
+      index: 2,
+      title: '三分留白',
+      zoomLabel: '1×',
+      framing: '右三分',
+      alignment: Alignment.centerRight,
+    ),
+    _ShotPlan(
+      index: 3,
+      title: '主体特写',
+      zoomLabel: '2×',
+      framing: '居中',
+      alignment: Alignment.center,
+    ),
+  ];
+
+  List<_ShotPlan> get _currentPlans => switch (_scene) {
+    SceneMode.portrait => _plans,
+    SceneMode.street => _streetPlans,
+    SceneMode.general || SceneMode.landscape || SceneMode.still => _generalPlans,
+  };
+
   @override
   void initState() {
     super.initState();
@@ -111,6 +187,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     _frameWatchdog?.cancel();
     _guidanceSub?.cancel();
     _frameSub?.cancel();
+    _promptTimer?.cancel();
     super.dispose();
   }
 
@@ -123,10 +200,29 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   }
 
   _ShotPlan get _activePlan {
-    for (final plan in _plans) {
+    for (final plan in _currentPlans) {
       if (plan.index == _zoomIndex) return plan;
     }
-    return _plans.first;
+    return _currentPlans.first;
+  }
+
+  String get _subjectLabel {
+    if (_scene == SceneMode.street) return '街景';
+    if (_scene == SceneMode.general ||
+        _scene == SceneMode.landscape ||
+        _scene == SceneMode.still) {
+      return '重点';
+    }
+    final guide = _guide;
+    if (guide == null) return '主体';
+    if (guide.subject == 'face') return '人脸';
+    if (guide.subject == 'person') {
+      final height = guide.subjectBox.length == 4 ? guide.subjectBox[3] : 0.0;
+      if (height >= 0.52) return '全身';
+      if (height >= 0.30) return '半身';
+      return '人物';
+    }
+    return '主体';
   }
 
   Future<void> _bootstrap() async {
@@ -160,11 +256,31 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _guide = null;
       _aligned = false;
       _alignProgress = 0.12;
+      _lastActionLabel = null;
     });
-    _analyzeTimer = Timer(const Duration(milliseconds: 1600), () {
+    _showPrompt('稳住手机', '正在识别主体与场景', 2400);
+    _analyzeTimer = Timer(const Duration(milliseconds: 1800), () {
       if (!mounted) return;
       setState(() => _analyzing = false);
+      _showPrompt('识别完成', '选择构图方案，再把主体对准环', 2000);
       _startCommandCycle();
+    });
+  }
+
+  /// 顶部只做阶段性小提示，2–3 秒自动收走，不再常驻一张大卡。
+  void _showPrompt(String title, String? subtitle, int milliseconds) {
+    _promptTimer?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _promptTitle = title;
+      _promptSubtitle = subtitle;
+    });
+    _promptTimer = Timer(Duration(milliseconds: milliseconds), () {
+      if (!mounted) return;
+      setState(() {
+        _promptTitle = null;
+        _promptSubtitle = null;
+      });
     });
   }
 
@@ -183,16 +299,21 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _guide = null;
       _aligned = false;
       _alignProgress = 0.12;
+      _lastActionLabel = null;
     });
+    _showPrompt('稳住手机', '正在识别主体与场景', 2500);
     _guidanceSub = _camera.guidanceStream.listen(_onGuidanceFrame);
     _frameSub = _camera.frameStream.listen((tick) {
       _lastFrameTs = tick.ts;
     });
     _startFrameWatchdog();
-    // 原生首帧约 100–300ms；先留一秒“稳住手机”的分析态。
-    _analyzeTimer = Timer(const Duration(milliseconds: 1200), () {
+    // 原生首帧约 100–300ms；先留 1.8 秒“稳住手机”的分析态。
+    _analyzeTimer = Timer(const Duration(milliseconds: 1800), () {
       if (!mounted) return;
       setState(() => _analyzing = false);
+      if (_guide == null || !_isAlignedGuide(_guide!)) {
+        _showPrompt('识别完成', '选择构图方案，再把主体对准环', 2000);
+      }
     });
   }
 
@@ -233,7 +354,15 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _aligned = newlyAligned;
       _alignProgress = newlyAligned ? 1.0 : guide.progress;
     });
-    if (newlyAligned && !_wasAligned) HapticFeedback.lightImpact();
+    if (newlyAligned && !_wasAligned) {
+      HapticFeedback.lightImpact();
+      _showPrompt('构图已锁定', '可以按快门', 1500);
+    } else if (!_analyzing &&
+        guide.confidence > 0 &&
+        guide.actionLabel != _lastActionLabel) {
+      _showPrompt('构图建议', guide.hint, 1700);
+    }
+    _lastActionLabel = guide.actionLabel;
     _wasAligned = newlyAligned;
   }
 
@@ -411,9 +540,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _capturing = true;
       _flash = true;
     });
+    // 按下快门立刻给声/触/白闪，不等原生照片回调。
+    SystemSound.play(SystemSoundType.click);
     HapticFeedback.mediumImpact();
     final path = await _camera.takePhoto(flash: _flashOn);
-    await Future.delayed(const Duration(milliseconds: 160));
+    await Future.delayed(const Duration(milliseconds: 80));
     if (!mounted) return;
     setState(() {
       _flash = false;
@@ -467,15 +598,22 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   }
 
   void _openPlanSheet() {
-    if (_planSheetOpen || _scene != SceneMode.portrait) return;
+    if (_planSheetOpen) return;
     setState(() => _planSheetOpen = true);
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (sheetContext) => _PlanSheet(
-        plans: _plans,
+        plans: _currentPlans,
         selectedIndex: _zoomIndex,
+        sceneTitle: switch (_scene) {
+          SceneMode.portrait => 'Romy 的 3 种拍法',
+          SceneMode.street => '街道的 3 种拍法',
+          SceneMode.landscape => '风景的 3 种拍法',
+          SceneMode.still => '静物的 3 种拍法',
+          SceneMode.general => '这个场景的 3 种拍法',
+        },
         sceneAsset: _status == CameraStatus.demo
             ? 'assets/demo/scene.jpg'
             : null,
@@ -497,6 +635,27 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
+  void _openRatioSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => _RatioSheet(
+        selected: _ratio,
+        onSelect: (ratio) {
+          Navigator.of(sheetContext).pop();
+          if (ratio == _ratio) return;
+          setState(() => _ratio = ratio);
+          _showPrompt('比例已切换', '${ratio.label} · 宽度铺满取景', 1600);
+          if (_live) {
+            _startLiveGuidance();
+          } else if (_status == CameraStatus.demo) {
+            _startDemoAnalysis();
+          }
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -509,21 +668,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         body: Stack(
           fit: StackFit.expand,
           children: [
-            _buildStage(),
-            SafeArea(
-              child: Column(
-                children: [
-                  _buildTopBar(),
-                  const SizedBox(height: 6),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: _buildGuideCard(),
-                  ),
-                  const Spacer(),
-                  _buildBottomControls(),
-                ],
-              ),
-            ),
+            _buildFramedLayout(),
             if (_flash)
               const Positioned.fill(
                 child: IgnorePointer(
@@ -534,6 +679,91 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
               Positioned.fill(child: _buildPermissionCard()),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 取景窗按 3:4 默认比例铺满宽度，高度由比例决定；底部控制区独立在画面外。
+  Widget _buildFramedLayout() {
+    return SafeArea(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final maxWidth = constraints.maxWidth;
+          final maxHeight = constraints.maxHeight;
+          const controlsReserve = 236.0;
+          final maxStageHeight = math.max(220.0, maxHeight - controlsReserve);
+          final fullWidthHeight = maxWidth * _ratio.heightOverWidth;
+          double stageHeight = fullWidthHeight;
+          double stageWidth = maxWidth;
+          if (stageHeight > maxStageHeight) {
+            stageHeight = maxStageHeight;
+            stageWidth = stageHeight / _ratio.heightOverWidth;
+          }
+
+          return Column(
+            children: [
+              SizedBox(
+                width: maxWidth,
+                height: stageHeight,
+                child: Center(
+                  child: SizedBox(
+                    width: stageWidth,
+                    height: stageHeight,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(18),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          _buildStage(),
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            height: 108,
+                            child: IgnorePointer(
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Colors.black.withValues(alpha: 0.56),
+                                      Colors.black.withValues(alpha: 0.18),
+                                      Colors.transparent,
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            child: _buildTopBar(),
+                          ),
+                          if (_promptTitle != null)
+                            Positioned(
+                              top: 56,
+                              left: 18,
+                              right: 18,
+                              child: _buildPromptChip(),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.bottomCenter,
+                  child: _buildBottomControls(),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -596,7 +826,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         child: Icon(
           icon,
           size: 19,
-          color: active ? PrimeColor.white : PrimeColor.white54,
+          color: active ? PrimeColor.white : PrimeColor.white70,
         ),
       ),
     );
@@ -626,11 +856,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 analyzing: _analyzing,
                 showGrid: _gridOn,
                 frameRect: previewRect,
-                subjectLabel: _scene == SceneMode.portrait
-                    ? '主体'
-                    : _scene == SceneMode.street
-                    ? '街景'
-                    : '重点',
+                subjectLabel: _subjectLabel,
               ),
             ),
           ],
@@ -704,109 +930,63 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     }
   }
 
-  Widget _buildGuideCard() {
-    final label = _analyzing
-        ? 'PRIME · AI'
-        : _aligned
-        ? '构图已锁定'
-        : 'PRIME · AI 构图';
-    final title = _analyzing
-        ? _scene.analyzingText
-        : _aligned
-        ? '对齐了 · 可以按快门'
-        : (_guide?.hint ?? '把画面重点放进取景框');
-    final subtitle = _analyzing
-        ? '请稳住手机，不要移动'
-        : _aligned
-        ? '构图已锁定 · 直接出片'
-        : _scene == SceneMode.portrait
-        ? '${_activePlan.title} · ${_activePlan.zoomLabel} · ${_activePlan.framing}'
-        : _scene.settingText;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(10, 10, 12, 10),
-          decoration: BoxDecoration(
-            color: const Color(0xE60A0A0A),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: PrimeColor.white12, width: 0.8),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: PrimeColor.white12),
-                ),
-                alignment: Alignment.center,
-                child: const _SparkleMark(size: 17, color: PrimeColor.white70),
+  /// 顶部阶段性小提示：出现 2–3 秒后自动消失，不占常驻版面。
+  Widget _buildPromptChip() {
+    final title = _promptTitle ?? '';
+    final subtitle = _promptSubtitle;
+    return IgnorePointer(
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(999),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(12, 9, 14, 9),
+              decoration: BoxDecoration(
+                color: const Color(0xE60A0A0A),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: PrimeColor.white12, width: 0.8),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      label,
-                      style: PrimeType.overline.copyWith(
-                        color: PrimeColor.white38,
-                        letterSpacing: 1.5,
-                      ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const _SparkleMark(size: 14, color: PrimeColor.white70),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            height: 1.1,
+                            color: PrimeColor.white,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (subtitle != null) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            subtitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: PrimeType.caption.copyWith(
+                              color: PrimeColor.white54,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 14.5,
-                        height: 1.3,
-                        color: PrimeColor.white,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: PrimeType.caption.copyWith(
-                        color: PrimeColor.white54,
-                        fontSize: 10.5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (_analyzing)
-                const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 1.2,
-                    color: PrimeColor.white54,
                   ),
-                )
-              else if (_aligned)
-                const Icon(
-                  Icons.check_rounded,
-                  size: 18,
-                  color: PrimeColor.white,
-                )
-              else
-                const Icon(
-                  Icons.auto_awesome,
-                  size: 15,
-                  color: PrimeColor.white24,
-                ),
-            ],
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -836,7 +1016,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                   duration: const Duration(milliseconds: 160),
                   curve: Curves.easeOut,
                   width: i == _zoomIndex ? 44 : 36,
-                  height: 32,
+                  height: 30,
                   margin: const EdgeInsets.symmetric(horizontal: 1),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
@@ -872,23 +1052,22 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   Widget _buildBottomControls() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           _buildScenePicker(),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
-            child: _scene == SceneMode.portrait && _guide != null && !_analyzing
+            child: _guide != null && !_analyzing
                 ? _buildPlanPill()
-                : const SizedBox(height: 34),
+                : const SizedBox(height: 30),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 3),
           _buildFocalPill(),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           _buildUtilityRow(),
-          const SizedBox(height: 2),
           _buildShutterRow(),
         ],
       ),
@@ -897,7 +1076,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   Widget _buildScenePicker() {
     return SizedBox(
-      height: 34,
+      height: 30,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -910,8 +1089,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 duration: const Duration(milliseconds: 160),
                 margin: const EdgeInsets.symmetric(horizontal: 3),
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 6,
+                  horizontal: 13,
+                  vertical: 5,
                 ),
                 decoration: BoxDecoration(
                   color: scene == _scene
@@ -948,16 +1127,40 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   Widget _buildUtilityRow() {
     return SizedBox(
-      height: 36,
+      height: 32,
       child: Row(
         children: [
           _utilityIcon(Icons.grid_view_rounded, _toggleGrid, active: _gridOn),
           const Spacer(),
-          Text(
-            '全屏',
-            style: PrimeType.overline.copyWith(
-              color: PrimeColor.white38,
-              letterSpacing: 1.4,
+          GestureDetector(
+            key: const ValueKey('ratio-button'),
+            onTap: _openRatioSheet,
+            behavior: HitTestBehavior.opaque,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+              decoration: BoxDecoration(
+                color: PrimeColor.white06,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: PrimeColor.white12, width: 0.8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _ratio.label,
+                    style: PrimeType.overline.copyWith(
+                      color: PrimeColor.white70,
+                      letterSpacing: 1.4,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Icon(
+                    Icons.unfold_more_rounded,
+                    size: 12,
+                    color: PrimeColor.white38,
+                  ),
+                ],
+              ),
             ),
           ),
           const Spacer(),
@@ -976,8 +1179,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: SizedBox(
-        width: 36,
-        height: 36,
+        width: 32,
+        height: 32,
         child: Icon(
           icon,
           size: 18,
@@ -992,7 +1195,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       onTap: _openPlanSheet,
       behavior: HitTestBehavior.opaque,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
         decoration: BoxDecoration(
           color: PrimeColor.white06,
           borderRadius: BorderRadius.circular(22),
@@ -1008,7 +1211,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
             ),
             const SizedBox(width: 8),
             Text(
-              '切换构图方案',
+              _scene == SceneMode.portrait
+                  ? '${_activePlan.title} · 切换构图'
+                  : '${_activePlan.title} · 切换拍法',
               style: PrimeType.caption.copyWith(
                 color: PrimeColor.white54,
                 fontSize: 11,
@@ -1028,7 +1233,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   Widget _buildShutterRow() {
     return SizedBox(
-      height: 92,
+      height: 82,
       child: Row(
         children: [
           Expanded(
@@ -1110,7 +1315,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   Widget _buildShutterButton() {
     return GestureDetector(
       key: const ValueKey('shutter'),
-      onTap: _capture,
+      onTapDown: (_) => _capture(),
       behavior: HitTestBehavior.opaque,
       child: AnimatedScale(
         scale: _capturing ? 0.93 : 1.0,
@@ -1385,12 +1590,14 @@ class _PlanSheet extends StatelessWidget {
     required this.selectedIndex,
     required this.sceneAsset,
     required this.onSelect,
+    required this.sceneTitle,
   });
 
   final List<_ShotPlan> plans;
   final int selectedIndex;
   final String? sceneAsset;
   final ValueChanged<int> onSelect;
+  final String sceneTitle;
 
   @override
   Widget build(BuildContext context) {
@@ -1418,9 +1625,9 @@ class _PlanSheet extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              const Text(
-                'PRIME 的 3 种拍法',
-                style: TextStyle(
+              Text(
+                sceneTitle,
+                style: const TextStyle(
                   fontSize: 20,
                   height: 1.2,
                   color: PrimeColor.white,
@@ -1548,6 +1755,124 @@ class _PlanSheet extends StatelessWidget {
                     );
                   },
                 ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RatioSheet extends StatelessWidget {
+  const _RatioSheet({required this.selected, required this.onSelect});
+
+  final CaptureRatio selected;
+  final ValueChanged<CaptureRatio> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: PrimeColor.black,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 10, 18, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 3,
+                  decoration: BoxDecoration(
+                    color: PrimeColor.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                '取景比例',
+                style: TextStyle(
+                  fontSize: 20,
+                  height: 1.2,
+                  color: PrimeColor.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 5),
+              const Text(
+                '宽度铺满屏幕，高度由比例决定',
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.4,
+                  color: PrimeColor.white54,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  for (final ratio in CaptureRatio.values) ...[
+                    Expanded(
+                      child: GestureDetector(
+                        key: ValueKey('ratio-${ratio.name}'),
+                        onTap: () => onSelect(ratio),
+                        behavior: HitTestBehavior.opaque,
+                        child: Container(
+                          height: 100,
+                          decoration: BoxDecoration(
+                            color: PrimeColor.white06,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: ratio == selected
+                                  ? PrimeColor.white70
+                                  : PrimeColor.white12,
+                              width: ratio == selected ? 1.2 : 0.8,
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                width: 38,
+                                height: 38 * ratio.heightOverWidth,
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(3),
+                                    border: Border.all(
+                                      color: PrimeColor.white38,
+                                      width: 0.8,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 9),
+                              Text(
+                                ratio.label,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: ratio == selected
+                                      ? PrimeColor.white
+                                      : PrimeColor.white54,
+                                  fontWeight: ratio == selected
+                                      ? FontWeight.w600
+                                      : FontWeight.w400,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (ratio != CaptureRatio.values.last)
+                      const SizedBox(width: 10),
+                  ],
+                ],
               ),
             ],
           ),

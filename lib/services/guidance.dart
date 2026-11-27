@@ -3,32 +3,40 @@ import 'dart:math' as math;
 import 'compose_api.dart';
 
 /// 拍摄场景。通用保留给人像以外的一切画面；街景单独用三分/水平线规则。
-enum SceneMode { general, portrait, street }
+enum SceneMode { general, portrait, landscape, street, still }
 
 extension SceneModeX on SceneMode {
   String get label => switch (this) {
     SceneMode.general => '通用',
     SceneMode.portrait => '人像',
+    SceneMode.landscape => '风景',
     SceneMode.street => '街景',
+    SceneMode.still => '静物',
   };
 
   String get analyzingText => switch (this) {
     SceneMode.general => '正在读取画面构图',
     SceneMode.portrait => '正在进行人像构图分析',
+    SceneMode.landscape => '正在分析风景层次',
     SceneMode.street => '正在分析街景线条',
+    SceneMode.still => '正在分析静物主体',
   };
 
   String get settingText => switch (this) {
-    SceneMode.general => '通用构图 · 全屏',
-    SceneMode.portrait => '人像构图 · 全屏',
-    SceneMode.street => '街景 · 右三分 · 全屏',
+    SceneMode.general => '通用构图 · 3:4',
+    SceneMode.portrait => '人像构图 · 3:4',
+    SceneMode.landscape => '风景 · 三分层次 · 3:4',
+    SceneMode.street => '街景 · 右三分 · 3:4',
+    SceneMode.still => '静物 · 中心构图 · 3:4',
   };
 
   /// 没有识别结果时也要先把目标环画出来，用户才知道该往哪挪。
   List<double> get defaultTargetBox => switch (this) {
     SceneMode.general => const [0.34, 0.30, 0.32, 0.32],
     SceneMode.portrait => const [0.34, 0.08, 0.32, 0.62],
+    SceneMode.landscape => const [0.34, 0.30, 0.32, 0.32],
     SceneMode.street => const [0.54, 0.22, 0.24, 0.30],
+    SceneMode.still => const [0.34, 0.30, 0.32, 0.32],
   };
 }
 
@@ -99,8 +107,9 @@ class LiveComposer {
   ComposeResult _composePortrait(GuidanceFrame frame, double zoom) {
     final face = frame.face;
     final roll = frame.roll;
-    // 人体框偶尔会漏（人物太近、腿出画），但脸还在；用脸扩一个主体框兜底。
-    final box = frame.box ?? _boxFromFace(face);
+    // 框必须贴着真实主体：有人体框就用人体框；只有脸时就用脸框，
+    // 不再把一张脸硬扩成 3.2×/3.8× 的假“身体框”。
+    final box = frame.box ?? ((face != null && face.length == 4) ? face : null);
 
     if (box == null || box.length != 4) {
       return ComposeResult(
@@ -194,7 +203,7 @@ class LiveComposer {
               .clamp(0.15, 0.96);
 
     return ComposeResult(
-      subject: hasFace ? 'face' : 'person',
+      subject: frame.box != null ? 'person' : 'face',
       subjectBox: box,
       targetBox: const [0.34, 0.08, 0.32, 0.62],
       targetZoom: zoom,
@@ -316,17 +325,6 @@ class LiveComposer {
       actionLabel: action,
       progress: progress,
     );
-  }
-
-  /// 以脸为中心扩出半身框：宽约 3 个脸宽，高约 6 个脸高。
-  List<double>? _boxFromFace(List<double>? face) {
-    if (face == null || face.length != 4) return null;
-    final w = (face[2] * 3.2).clamp(0.18, 0.90);
-    final h = (face[3] * 3.8).clamp(0.42, 0.82);
-    final cx = face[0] + face[2] / 2;
-    final top = (face[1] - h * 0.10).clamp(0.0, 1.0 - h);
-    final left = (cx - w / 2).clamp(0.0, 1.0 - w);
-    return [left.toDouble(), top.toDouble(), w.toDouble(), h.toDouble()];
   }
 
   double _near(double value, double target, double tolerance) {

@@ -1,7 +1,7 @@
 name: prime_camera
 description: "定焦 PRIME · AI 构图相机 MVP"
 publish_to: 'none'
-version: 0.2.2+4
+version: 0.2.3+5
 
 environment:
   sdk: ^3.13.5

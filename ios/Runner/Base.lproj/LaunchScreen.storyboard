@@ -16,15 +16,35 @@
                     <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <subviews>
-                            <imageView opaque="NO" clipsSubviews="YES" multipleTouchEnabled="YES" contentMode="scaleAspectFit" image="LaunchImage" translatesAutoresizingMaskIntoConstraints="NO" id="YRO-k0-Ey4">
+                            <imageView opaque="NO" clipsSubviews="YES" multipleTouchEnabled="YES" contentMode="scaleAspectFit" image="LaunchMark" translatesAutoresizingMaskIntoConstraints="NO" id="YRO-k0-Ey4">
+                                <constraints>
+                                    <constraint firstAttribute="width" constant="96" id="mark-w"/>
+                                    <constraint firstAttribute="height" constant="96" id="mark-h"/>
+                                </constraints>
                             </imageView>
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="定焦" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="brand-label">
+                                <fontDescription key="fontDescription" type="system" weight="semibold" pointSize="34"/>
+                                <color key="textColor" white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                            </label>
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="P R I M E" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="latin-label">
+                                <fontDescription key="fontDescription" type="system" weight="medium" pointSize="11"/>
+                                <color key="textColor" white="1" alpha="0.38" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                            </label>
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="AI COMPOSITION CAMERA" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="tag-label">
+                                <fontDescription key="fontDescription" type="system" weight="regular" pointSize="8"/>
+                                <color key="textColor" white="1" alpha="0.24" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                            </label>
                         </subviews>
-                        <color key="backgroundColor" red="0.96470588235" green="0.94509803922" blue="0.90196078431" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                        <color key="backgroundColor" red="0.03921568627" green="0.03921568627" blue="0.03921568627" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                         <constraints>
-                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="leading" secondItem="Ze5-6b-2t3" secondAttribute="leading" id="1a2-6s-vTC"/>
-                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="trailing" secondItem="Ze5-6b-2t3" secondAttribute="trailing" id="4X2-HB-R7a"/>
-                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="top" secondItem="Ze5-6b-2t3" secondAttribute="top" constant="24" id="YRO-top"/>
-                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="bottom" secondItem="Ze5-6b-2t3" secondAttribute="bottom" id="YRO-bottom"/>
+                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="mark-cx"/>
+                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" constant="-72" id="mark-cy"/>
+                            <constraint firstItem="brand-label" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="brand-cx"/>
+                            <constraint firstItem="brand-label" firstAttribute="top" secondItem="YRO-k0-Ey4" secondAttribute="bottom" constant="24" id="brand-top"/>
+                            <constraint firstItem="latin-label" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="latin-cx"/>
+                            <constraint firstItem="latin-label" firstAttribute="top" secondItem="brand-label" secondAttribute="bottom" constant="8" id="latin-top"/>
+                            <constraint firstItem="tag-label" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="tag-cx"/>
+                            <constraint firstItem="tag-label" firstAttribute="top" secondItem="latin-label" secondAttribute="bottom" constant="14" id="tag-top"/>
                         </constraints>
                     </view>
                 </viewController>
@@ -34,6 +54,6 @@
         </scene>
     </scenes>
     <resources>
-        <image name="LaunchImage" width="390" height="844"/>
+        <image name="LaunchMark" width="96" height="96"/>
     </resources>
 </document>
