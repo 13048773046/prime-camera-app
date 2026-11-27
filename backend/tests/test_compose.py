@@ -106,3 +106,16 @@ def test_persona_falls_back_to_local_line():
     assert body["name"] == "流小萤"
     assert body["line"]
     assert body["source"] in {"local", "model"}
+
+
+def test_ai_camera_v2_multipart():
+    img = Image.new("RGB", (900, 1200), color=(210, 215, 205))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=70)
+    files = {"file": ("frame.jpg", buf.getvalue(), "image/jpeg")}
+    data = {"shoot_type": "landscape", "direction": "landscape", "comp_scene": "landscape"}
+    resp = client.post("/ai_camera/v2", files=files, data=data)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    assert body["data"]["PicWithPredictAreaLine"]

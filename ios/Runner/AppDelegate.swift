@@ -217,6 +217,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       let watermark = args?["watermark"] as? Bool ?? true
       let watermarkStyle = args?["watermarkStyle"] as? String ?? "minimal"
       let livePhoto = args?["livePhoto"] as? Bool ?? false
+      let saveRaw = args?["saveRaw"] as? Bool ?? false
       takePhoto(
         flash: flash,
         filter: filter,
@@ -225,6 +226,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
         watermark: watermark,
         watermarkStyle: watermarkStyle,
         livePhoto: livePhoto,
+        saveRaw: saveRaw,
         result: result
       )
     case "saveToAlbum":
@@ -931,11 +933,10 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
         DispatchQueue.main.async { result(false) }
         return
       }
-      let bias = max(-2.0, min(2.0, value))
-      guard device.isExposureTargetBiasSupported(bias) else {
-        DispatchQueue.main.async { result(false) }
-        return
-      }
+      let bias = max(
+        CGFloat(device.minExposureTargetBias),
+        min(CGFloat(device.maxExposureTargetBias), value)
+      )
       do {
         try device.lockForConfiguration()
         device.setExposureTargetBias(Float(bias), completionHandler: nil)
@@ -957,6 +958,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     watermark: Bool,
     watermarkStyle: String,
     livePhoto: Bool,
+    saveRaw: Bool,
     result: @escaping FlutterResult
   ) {
     sessionQueue.async { [weak self] in
@@ -1009,6 +1011,13 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
           return
         }
         var finalData = self.applyFilter(data, filter: filter, ratio: ratio) ?? data
+        if saveRaw {
+          let rawDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PRIME/ORIGINALS", isDirectory: true)
+          try? FileManager.default.createDirectory(at: rawDir, withIntermediateDirectories: true)
+          let rawURL = rawDir.appendingPathComponent("raw-\(UUID().uuidString).jpg")
+          try? data.write(to: rawURL, options: .atomic)
+        }
         if selfieMirror && self.currentPosition == .front,
            let ui = UIImage(data: finalData) {
           finalData = self.flipHorizontal(ui).jpegData(compressionQuality: 0.95) ?? finalData
@@ -1223,9 +1232,9 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     case "clear":
       return controls(input, saturation: 1.08, contrast: 1.10, brightness: 0.03)
     case "warm":
-      return temp(controls(input, saturation: 1.04, contrast: 1.04), from: 6500, to: 5200)
+      return temp(controls(input, saturation: 1.04, contrast: 1.04, brightness: 0.02), from: 6500, to: 5200)
     case "cool":
-      return temp(controls(input, saturation: 1.02, contrast: 1.04), from: 6500, to: 8000)
+      return temp(controls(input, saturation: 1.02, contrast: 1.04, brightness: 0.02), from: 6500, to: 8000)
     case "doka_s50":
       return controls(temp(input, from: 6500, to: 5200), saturation: 0.95, contrast: 0.92, brightness: 0.14)
     case "doka_s100":

@@ -6,6 +6,8 @@
 	<string>定焦 PRIME 需要使用相机进行构图预览和拍摄。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>定焦 PRIME 需要访问相册以选择或对比照片。</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>PRIME 拍摄实况照片时需要录制环境声。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>定焦 PRIME 需要把拍摄成片保存到相册。</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>

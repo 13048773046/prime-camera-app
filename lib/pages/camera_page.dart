@@ -879,6 +879,10 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         onSelect: (id, label) {
           Navigator.of(sheetContext).pop();
           if (id == _filterId) return;
+          if (filterById(id).pro && !CameraPrefs.instance.isPro) {
+            _showPrompt('Doka Pro 胶片', '$label 需要 Pro；在“我的 → 兑换码”输入 PRIME2026', 2600);
+            return;
+          }
           setState(() => _filterId = id);
           _showPrompt('滤镜 · $label', '已套用到取景与下一张照片', 1800);
         },
@@ -1202,6 +1206,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
               if (mounted) setState(() => _showExposure = false);
             });
           },
+          onDoubleTap: () {
+            if (_lockedSubjectBox == null) return;
+            setState(() => _lockedSubjectBox = null);
+            _showPrompt('已解除主体锁定', 'AI 会重新判断画面主体', 1600);
+          },
           onLongPressStart: (details) {
             if (!CameraPrefs.instance.subjectGuide) return;
             final x = ((details.localPosition.dx - previewRect.left) /
@@ -1220,7 +1229,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 h,
               ];
             });
-            _showPrompt('主体已锁定', 'AI 会优先分析框内的人或物；再长按一次可解除', 2000);
+            _showPrompt('主体已锁定', 'AI 会优先分析框内的人或物；长按可重新框选，双击解除', 2200);
           },
           child: Stack(
             fit: StackFit.expand,

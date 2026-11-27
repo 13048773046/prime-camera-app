@@ -151,7 +151,7 @@ class _MinePageState extends State<MinePage> {
                       _row(
                         icon: Icons.info_outline_rounded,
                         label: '版本',
-                        value: '0.4.0',
+                        value: '0.4.1',
                       ),
                     ]),
                     const SizedBox(height: 22),
