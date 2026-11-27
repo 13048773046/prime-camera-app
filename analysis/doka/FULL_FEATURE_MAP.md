@@ -75,7 +75,7 @@
 | Doka 功能 | 证据 | PRIME |
 |---|---|---|
 | 账号卡、登录/未登录 | `fragment_mine.xml` | 🟡 本地模式 |
-| 手机号验证码登录/注册 | `LoginActivity` / `login_*` | 🟡 本地体验登录 + 后端接口已备 |
+| 手机号验证码登录/注册 | `LoginActivity` / `login_*` | ✅ 云端登录客户端已接；未配 `PRIME_API_BASE` 时本地体验 |
 | 微信登录/绑定/换绑/解绑 | `WechatAccountActivity` / `wxapi` | 🟡 本地演示身份；真实微信 AppID 待配 |
 | Google/邮箱登录（海外） | `GlobalLoginActivity` | ⬜ |
 | 用户信息/昵称/头像/手机号 | `UserInfoActivity` | ⬜ |

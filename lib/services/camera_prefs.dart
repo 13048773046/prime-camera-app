@@ -27,6 +27,8 @@ class CameraPrefs {
   String videoQuality = '1080P';
   DateTime? proUntil;
   String? accountPhone;
+  String? authToken;
+  String? userName;
 
   bool get isPro => proUntil != null && proUntil!.isAfter(DateTime.now());
 
@@ -55,5 +57,7 @@ class CameraPrefs {
     videoQuality = '1080P';
     proUntil = null;
     accountPhone = null;
+    authToken = null;
+    userName = null;
   }
 }

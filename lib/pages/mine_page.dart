@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/camera_prefs.dart';
+import '../services/doka_api.dart';
 import '../services/camera_service.dart';
 import '../theme.dart';
 import 'settings_page.dart';
@@ -151,7 +152,7 @@ class _MinePageState extends State<MinePage> {
                       _row(
                         icon: Icons.info_outline_rounded,
                         label: '版本',
-                        value: '0.4.2',
+                        value: '0.4.3',
                       ),
                     ]),
                     const SizedBox(height: 22),
@@ -607,9 +608,20 @@ class _AccountSheetState extends State<_AccountSheet> {
     super.dispose();
   }
 
-  void _sendCode() {
-    if (_phone.text.trim().length < 6) {
+  Future<void> _sendCode() async {
+    final phone = _phone.text.trim();
+    if (phone.length < 6) {
       setState(() => _hint = '请输入正确的手机号');
+      return;
+    }
+    final api = DokaApi.instance;
+    if (api.enabled) {
+      final devCode = await api.getCode(phone);
+      if (!mounted) return;
+      setState(() {
+        _codeSent = true;
+        _hint = devCode != null ? '开发验证码：$devCode' : '验证码已发送，请查看短信';
+      });
       return;
     }
     setState(() {
@@ -618,16 +630,37 @@ class _AccountSheetState extends State<_AccountSheet> {
     });
   }
 
-  void _login() {
+  Future<void> _login() async {
     if (!_codeSent) {
-      _sendCode();
+      await _sendCode();
+      return;
+    }
+    final phone = _phone.text.trim();
+    final api = DokaApi.instance;
+    if (api.enabled) {
+      final profile = await api.login(phone, _code.text.trim());
+      if (!mounted) return;
+      if (profile == null) {
+        setState(() => _hint = '登录失败：验证码错误或服务不可用');
+        return;
+      }
+      CameraPrefs.instance.accountPhone = phone;
+      CameraPrefs.instance.authToken = profile['token']?.toString();
+      CameraPrefs.instance.userName = profile['username']?.toString();
+      final expire = DateTime.tryParse(profile['vip_expire_at']?.toString() ?? '');
+      if (profile['is_vip'] == true && expire != null) {
+        CameraPrefs.instance.proUntil = expire;
+      }
+      widget.onChanged();
+      Navigator.of(context).pop();
       return;
     }
     if (_code.text.trim() != '123456') {
       setState(() => _hint = '验证码错误，本地体验码为 123456');
       return;
     }
-    CameraPrefs.instance.accountPhone = _phone.text.trim();
+    CameraPrefs.instance.accountPhone = phone;
+    CameraPrefs.instance.userName = '本地体验账号';
     widget.onChanged();
     Navigator.of(context).pop();
   }
@@ -658,7 +691,7 @@ class _AccountSheetState extends State<_AccountSheet> {
               Text(
                 phone == null
                     ? '登录后同步 Pro 权益与 AI 次数。当前为本地体验模式，不会上传手机号。'
-                    : '手机号：$phone\\n登录方式：本地体验账号',
+                    : '手机号：$phone\n登录方式：${DokaApi.instance.enabled ? 'PRIME 云端账号' : '本地体验账号'}',
                 style: const TextStyle(fontSize: 11, height: 1.6, color: PrimeColor.white38),
               ),
               if (phone == null) ...[
@@ -714,6 +747,7 @@ class _AccountSheetState extends State<_AccountSheet> {
                 ),
               ] else ...[
                 const SizedBox(height: 18),
+                _infoRow('账号', CameraPrefs.instance.userName ?? '本地体验账号'),
                 _infoRow('Pro 状态', CameraPrefs.instance.isPro ? '已激活' : '未开通'),
                 _infoRow('免费 AI 次数', CameraPrefs.instance.isPro ? '不限' : '5 / 5'),
                 const SizedBox(height: 16),
@@ -722,6 +756,8 @@ class _AccountSheetState extends State<_AccountSheet> {
                   child: OutlinedButton(
                     onPressed: () {
                       CameraPrefs.instance.accountPhone = null;
+                      CameraPrefs.instance.authToken = null;
+                      CameraPrefs.instance.userName = null;
                       widget.onChanged();
                       Navigator.of(context).pop();
                     },
@@ -862,6 +898,43 @@ class _RedeemDialogState extends State<_RedeemDialog> {
     super.dispose();
   }
 
+  Future<void> _redeem() async {
+    final code = _controller.text.trim().toUpperCase();
+    final api = DokaApi.instance;
+    if (api.enabled) {
+      final token = CameraPrefs.instance.authToken;
+      if (token == null || token.isEmpty) {
+        setState(() => _hint = '请先登录云端账号再兑换');
+        return;
+      }
+      final data = await api.redeem(code, token);
+      if (!mounted) return;
+      if (data == null) {
+        setState(() => _hint = '兑换码无效，或服务暂不可用');
+        return;
+      }
+      final profile = data['profile'];
+      if (profile is Map) {
+        final expire = DateTime.tryParse(profile['vip_expire_at']?.toString() ?? '');
+        if (expire != null) CameraPrefs.instance.proUntil = expire;
+      }
+      widget.onChanged();
+      Navigator.pop(context);
+      return;
+    }
+    if (code == 'PRIME2026' || code == 'PRIME-30') {
+      CameraPrefs.instance.redeemPro(30);
+      widget.onChanged();
+      Navigator.pop(context);
+    } else if (code == 'PRIME-LIFETIME') {
+      CameraPrefs.instance.redeemPro(3650);
+      widget.onChanged();
+      Navigator.pop(context);
+    } else {
+      setState(() => _hint = '兑换码无效；体验码 PRIME2026');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -889,23 +962,7 @@ class _RedeemDialogState extends State<_RedeemDialog> {
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-        TextButton(
-          onPressed: () {
-            final code = _controller.text.trim().toUpperCase();
-            if (code == 'PRIME2026' || code == 'PRIME-30') {
-              CameraPrefs.instance.redeemPro(30);
-              widget.onChanged();
-              Navigator.pop(context);
-            } else if (code == 'PRIME-LIFETIME') {
-              CameraPrefs.instance.redeemPro(3650);
-              widget.onChanged();
-              Navigator.pop(context);
-            } else {
-              setState(() => _hint = '兑换码无效；体验码 PRIME2026');
-            }
-          },
-          child: const Text('兑换'),
-        ),
+        TextButton(onPressed: _redeem, child: const Text('兑换')),
       ],
     );
   }

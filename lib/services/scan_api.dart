@@ -89,7 +89,7 @@ class ScanApi {
     String subjectKind = 'person',
   }) async {
     if (!enabled) return null;
-    final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/+$'), '')}/v1/scan');
+    final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/+$'), '')}/ai_camera/v2');
     final request = http.MultipartRequest('POST', uri)
       ..fields['shoot_type'] = 'preview'
       ..fields['direction'] = scene
