@@ -67,5 +67,29 @@ void main() {
     expect(find.text('对齐了 · 可以按快门'), findsOneWidget);
     expect(find.text('构图已锁定 · 直接出片'), findsOneWidget);
     expect(find.text('切换构图方案'), findsOneWidget);
+
+    // 用户往一个方向移动手机后，主体框变化，口令必须跟着变；
+    // 这是“移动位置没反应”的回归测试：不能一直停在上一条口令。
+    await messenger.handlePlatformMessage(
+      channel.name,
+      codec.encodeMethodCall(
+        const MethodCall('guidance', <String, dynamic>{
+          'box': <double>[0.08, 0.10, 0.30, 0.60],
+          'face': <double>[0.18, 0.12, 0.09, 0.16],
+          'roll': 0.4,
+          'pitch': 0.0,
+          'frameW': 1080,
+          'frameH': 1920,
+          'hfov': 42.0,
+          'ts': 2000,
+        }),
+      ),
+      (_) {},
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('手机往左带一点，把人物放进环'), findsOneWidget);
+    expect(find.text('构图已锁定'), findsNothing);
+    expect(find.text('对齐了 · 可以按快门'), findsNothing);
   });
 }

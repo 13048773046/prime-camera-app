@@ -23,6 +23,13 @@ extension SceneModeX on SceneMode {
     SceneMode.portrait => '人像构图 · 全屏',
     SceneMode.street => '街景 · 右三分 · 全屏',
   };
+
+  /// 没有识别结果时也要先把目标环画出来，用户才知道该往哪挪。
+  List<double> get defaultTargetBox => switch (this) {
+    SceneMode.general => const [0.34, 0.30, 0.32, 0.32],
+    SceneMode.portrait => const [0.34, 0.08, 0.32, 0.62],
+    SceneMode.street => const [0.54, 0.22, 0.24, 0.30],
+  };
 }
 
 /// 原生相机每帧推上来的识别结果。
@@ -99,7 +106,7 @@ class LiveComposer {
       return ComposeResult(
         subject: 'person',
         subjectBox: const [],
-        targetBox: const [],
+        targetBox: const [0.34, 0.08, 0.32, 0.62],
         targetZoom: zoom,
         horizonFix: roll,
         hint: '把人物放进取景框',

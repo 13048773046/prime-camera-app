@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreMotion
 import Flutter
+import ImageIO
 import Photos
 import UIKit
 import Vision
@@ -33,6 +34,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private let visionLock = NSLock()
   private var visionBusy = false
   private var lastVisionAt: CFTimeInterval = 0
+  private var lastFrameNoticeAt: CFTimeInterval = 0
   private let motionManager = CMMotionManager()
   private let motionLock = NSLock()
   private var rollDegrees: Double = 0
@@ -188,6 +190,8 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     case "setZoom":
       let zoom = (call.arguments as? [String: Any])?["zoom"] as? NSNumber
       applyZoom(CGFloat(truncating: zoom ?? 1.0), result: result)
+    case "restart":
+      restart(result: result)
     case "switchCamera":
       switchCamera(result: result)
     case "takePhoto":
@@ -441,7 +445,10 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       if connection.isVideoRotationAngleSupported(90) {
         connection.videoRotationAngle = 90
       }
-    } else {
+    }
+    // 某些输出在 iOS 17 上并不支持 rotationAngle；保留旧 orientation
+    // 兜底，避免拿到未旋转的横屏 buffer 后 Vision 框完全对不上。
+    if connection.isVideoOrientationSupported {
       connection.videoOrientation = .portrait
     }
     if connection.isVideoMirroringSupported {
@@ -461,6 +468,29 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     isRunning = false
   }
 
+  /// 预览纹理长时间没有新帧时，Dart 侧会调用它做一次轻量重启。
+  /// 不重建 input / output，只重启 running 状态，避免打断正在进行的镜头切换。
+  private func restart(result: @escaping FlutterResult) {
+    sessionQueue.async { [weak self] in
+      guard let self = self else {
+        DispatchQueue.main.async { result(false) }
+        return
+      }
+      guard self.isConfigured else {
+        DispatchQueue.main.async { result(false) }
+        return
+      }
+      if self.isRunning {
+        self.session.stopRunning()
+        self.isRunning = false
+      }
+      self.applyConnectionSettings()
+      self.session.startRunning()
+      self.isRunning = true
+      DispatchQueue.main.async { result(true) }
+    }
+  }
+
   // MARK: - Video frames
 
   func captureOutput(
@@ -476,6 +506,19 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
 
     // 只抽一部分帧做识别，保证预览优先流畅。
     let now = CACurrentMediaTime()
+    if now - lastFrameNoticeAt >= 0.45 {
+      lastFrameNoticeAt = now
+      let width = Int(CVPixelBufferGetWidth(imageBuffer))
+      let height = Int(CVPixelBufferGetHeight(imageBuffer))
+      let ts = Int(Date().timeIntervalSince1970 * 1000)
+      DispatchQueue.main.async { [weak self] in
+        self?.channel.invokeMethod("frame", arguments: [
+          "ts": ts,
+          "w": width,
+          "h": height
+        ])
+      }
+    }
     guard now - lastVisionAt >= 0.16, beginVision() else { return }
     lastVisionAt = now
     let angles = currentAngles()
@@ -504,40 +547,77 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   /// 在取景流上实时找人/脸，同时找非人像场景的显著区域。
   /// 坐标按完整 9:16 画幅归一化，页面全屏预览再按 cover 裁切映射。
   private func analyzeFrame(_ pixelBuffer: CVPixelBuffer, roll: Double, pitch: Double) {
-    let humanRequest = VNDetectHumanRectanglesRequest()
-    humanRequest.upperBodyOnly = false
-    let faceRequest = VNDetectFaceRectanglesRequest()
-    let saliencyRequest = VNGenerateAttentionBasedSaliencyImageRequest()
-    let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+    let rawWidth = CVPixelBufferGetWidth(pixelBuffer)
+    let rawHeight = CVPixelBufferGetHeight(pixelBuffer)
+    // 正常情况下 videoOutput connection 已旋转成竖屏；万一某个系统版本
+    // 没有应用 rotation，这里按横屏 buffer 用 .right 兜底，保证 Vision
+    // 仍然拿到正立的画面，而不是把横向画面当成竖屏来识别。
+    let orientation: CGImagePropertyOrientation = rawWidth > rawHeight ? .right : .up
+    let orientedWidth = rawWidth > rawHeight ? rawHeight : rawWidth
+    let orientedHeight = rawWidth > rawHeight ? rawWidth : rawHeight
+    let handler = VNImageRequestHandler(
+      cvPixelBuffer: pixelBuffer,
+      orientation: orientation,
+      options: [:]
+    )
 
+    // 人/脸和显著区域分开 perform。某个 request 在特定系统上失败时，
+    // 不会把另一组结果一起丢掉，这是实时引导“没有反应”最常见的原因。
+    var human: VNHumanObservation?
+    var face: VNFaceObservation?
     do {
-      try handler.perform([humanRequest, faceRequest, saliencyRequest])
-      let humans = humanRequest.results ?? []
-      let faces = faceRequest.results ?? []
-      let human = humans.max { area(of: $0.boundingBox) < area(of: $1.boundingBox) }
-      let face = faces.max { area(of: $0.boundingBox) < area(of: $1.boundingBox) }
-      let salientObservation = saliencyRequest.results?.first as? VNSaliencyImageObservation
-      let salient = salientObservation?.salientObjects?.max {
+      let humanRequest = VNDetectHumanRectanglesRequest()
+      humanRequest.upperBodyOnly = false
+      let faceRequest = VNDetectFaceRectanglesRequest()
+      try handler.perform([humanRequest, faceRequest])
+      human = (humanRequest.results ?? []).max {
         area(of: $0.boundingBox) < area(of: $1.boundingBox)
       }
-      sendGuidance(
-        box: human.map { normalizeFrame($0.boundingBox) },
-        face: face.map { normalizeFrame($0.boundingBox) },
-        saliency: salient.map { normalizeFrame($0.boundingBox) },
-        roll: roll,
-        pitch: pitch,
-        buffer: pixelBuffer
-      )
+      face = (faceRequest.results ?? []).max {
+        area(of: $0.boundingBox) < area(of: $1.boundingBox)
+      }
     } catch {
-      sendGuidance(
-        box: nil,
-        face: nil,
-        saliency: nil,
-        roll: roll,
-        pitch: pitch,
-        buffer: pixelBuffer
-      )
+      human = nil
+      face = nil
     }
+
+    var salient: VNSaliencyImageObservation?
+    var salientObject: VNRectangleObservation?
+    do {
+      let saliencyRequest = VNGenerateAttentionBasedSaliencyImageRequest()
+      try handler.perform([saliencyRequest])
+      salient = saliencyRequest.results?.first as? VNSaliencyImageObservation
+      salientObject = salient?.salientObjects?.max {
+        area(of: $0.boundingBox) < area(of: $1.boundingBox)
+      }
+    } catch {
+      salientObject = nil
+    }
+
+    // attention saliency 偶发无结果时，用 objectness saliency 兜底，
+    // 街景/建筑/静物至少还能得到一个可跟随的区域。
+    if salientObject == nil {
+      do {
+        let objectness = VNGenerateObjectnessBasedSaliencyImageRequest()
+        try handler.perform([objectness])
+        let result = objectness.results?.first as? VNSaliencyImageObservation
+        salientObject = result?.salientObjects?.max {
+          area(of: $0.boundingBox) < area(of: $1.boundingBox)
+        }
+      } catch {
+        salientObject = nil
+      }
+    }
+
+    sendGuidance(
+      box: human.map { normalizeFrame($0.boundingBox) },
+      face: face.map { normalizeFrame($0.boundingBox) },
+      saliency: salientObject.map { normalizeFrame($0.boundingBox) },
+      roll: roll,
+      pitch: pitch,
+      orientedWidth: orientedWidth,
+      orientedHeight: orientedHeight
+    )
   }
 
   private func area(of rect: CGRect) -> CGFloat {
@@ -559,10 +639,11 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     saliency: [Double]?,
     roll: Double,
     pitch: Double,
-    buffer: CVPixelBuffer
+    orientedWidth: Int,
+    orientedHeight: Int
   ) {
-    let width = Double(CVPixelBufferGetWidth(buffer))
-    let height = Double(CVPixelBufferGetHeight(buffer))
+    let width = Double(orientedWidth)
+    let height = Double(orientedHeight)
     // videoFieldOfView 是传感器横向视场；旋转到竖屏后横向对应传感器短边，按画幅比折算。
     let nativeFov = Double(currentDevice?.activeFormat.videoFieldOfView ?? 60)
     let shortSide = min(width, height)
@@ -625,6 +706,13 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       if device.isFocusModeSupported(.continuousAutoFocus) {
         device.focusMode = .continuousAutoFocus
       }
+      if device.isExposureModeSupported(.continuousAutoExposure) {
+        device.exposureMode = .continuousAutoExposure
+      }
+      if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+        device.whiteBalanceMode = .continuousAutoWhiteBalance
+      }
+      device.isSubjectAreaChangeMonitoringEnabled = true
       device.videoZoomFactor = actualFactor
       device.unlockForConfiguration()
     } catch {

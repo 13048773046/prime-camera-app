@@ -22,6 +22,8 @@ class CameraService {
   final bool _forceDemo;
   final StreamController<GuidanceFrame> _guidance =
       StreamController<GuidanceFrame>.broadcast();
+  final StreamController<CameraFrameTick> _frames =
+      StreamController<CameraFrameTick>.broadcast();
 
   bool _initialized = false;
   int? _textureId;
@@ -34,10 +36,19 @@ class CameraService {
   /// 实时构图流：原生约 5–6fps 推送，空结果表示画面里没有找到主体。
   Stream<GuidanceFrame> get guidanceStream => _guidance.stream;
 
+  /// 原生取景帧心跳，约 2fps。用于发现纹理停止刷新并触发轻量重启。
+  Stream<CameraFrameTick> get frameStream => _frames.stream;
+
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     if (call.method == 'guidance' && call.arguments is Map) {
       _guidance.add(
         GuidanceFrame.fromMap(Map<String, dynamic>.from(call.arguments as Map)),
+      );
+    } else if (call.method == 'frame' && call.arguments is Map) {
+      _frames.add(
+        CameraFrameTick.fromMap(
+          Map<String, dynamic>.from(call.arguments as Map),
+        ),
       );
     }
     return null;
@@ -48,6 +59,7 @@ class CameraService {
       return CameraInitResult(
         status: CameraStatus.ready,
         textureId: _textureId,
+        ultraWide: _ultraWide,
       );
     }
     if (_forceDemo) {
@@ -164,6 +176,18 @@ class CameraService {
     }
   }
 
+  /// 纹理长时间没有新帧时，重启一次 running 状态；返回是否成功。
+  Future<bool> restart() async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('restart');
+      return ok ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   Future<String?> takePhoto({bool flash = false}) async {
     try {
       return await _channel.invokeMethod<String>('takePhoto', <String, dynamic>{
@@ -215,4 +239,22 @@ class CameraInitResult {
   final int? textureId;
   final String? message;
   final bool ultraWide;
+}
+
+class CameraFrameTick {
+  const CameraFrameTick({
+    required this.ts,
+    required this.width,
+    required this.height,
+  });
+
+  final int ts;
+  final int width;
+  final int height;
+
+  factory CameraFrameTick.fromMap(Map<String, dynamic> map) => CameraFrameTick(
+    ts: (map['ts'] as num? ?? 0).toInt(),
+    width: (map['w'] as num? ?? 1080).toInt(),
+    height: (map['h'] as num? ?? 1920).toInt(),
+  );
 }

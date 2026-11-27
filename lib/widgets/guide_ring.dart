@@ -141,26 +141,61 @@ class _GuidePainter extends CustomPainter {
 
     final sourceRect = frameRect ?? (Offset.zero & size);
     final hasSubject = subjectBox.length == 4;
+    Rect? subjectRect;
+    Rect? targetRect;
     if (hasSubject) {
-      final rect = Rect.fromLTWH(
+      subjectRect = Rect.fromLTWH(
         sourceRect.left + subjectBox[0] * sourceRect.width,
         sourceRect.top + subjectBox[1] * sourceRect.height,
         subjectBox[2] * sourceRect.width,
         subjectBox[3] * sourceRect.height,
       );
-      _paintSubject(canvas, rect, size);
+      _paintSubject(canvas, subjectRect, size);
     }
 
     final hasTarget = targetBox.length == 4;
     if (hasTarget) {
-      final rect = Rect.fromLTWH(
+      targetRect = Rect.fromLTWH(
         sourceRect.left + targetBox[0] * sourceRect.width,
         sourceRect.top + targetBox[1] * sourceRect.height,
         targetBox[2] * sourceRect.width,
         targetBox[3] * sourceRect.height,
       );
-      _paintTarget(canvas, size, rect, center);
+      _paintTarget(canvas, size, targetRect, center);
     }
+
+    // 主体中心到目标环的细虚线：手机移动时主体框会走，这条线也跟着走。
+    // 没有识别到主体时只保留目标环，不再让人误以为画面没有反应。
+    if (subjectRect != null && targetRect != null) {
+      _paintMoveCue(canvas, subjectRect, targetRect);
+    }
+  }
+
+  void _paintMoveCue(Canvas canvas, Rect subject, Rect target) {
+    final from = subject.center;
+    final to = target.center;
+    if ((to - from).distance < 10) return;
+    _dashedLine(
+      canvas,
+      from,
+      to,
+      Paint()
+        ..strokeWidth = 0.8
+        ..color = Colors.white.withValues(alpha: 0.30),
+    );
+    canvas.drawCircle(
+      from,
+      2.6,
+      Paint()..color = Colors.white.withValues(alpha: 0.82),
+    );
+    canvas.drawCircle(
+      from,
+      9,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8
+        ..color = Colors.white.withValues(alpha: 0.24),
+    );
   }
 
   void _paintAnalyzing(Canvas canvas, Size size) {

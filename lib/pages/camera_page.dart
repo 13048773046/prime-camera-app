@@ -57,11 +57,16 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   ComposeResult? _guide;
   Timer? _alignTimer;
   Timer? _analyzeTimer;
+  Timer? _frameWatchdog;
   StreamSubscription<GuidanceFrame>? _guidanceSub;
+  StreamSubscription<CameraFrameTick>? _frameSub;
   final LiveComposer _composer = const LiveComposer();
   bool _live = false;
   bool _analyzing = false;
+  bool _restarting = false;
+  int _restartAttempts = 0;
   int _lastGuidanceTs = 0;
+  int _lastFrameTs = 0;
   bool _wasAligned = false;
 
   static const List<double> _zoomValues = [0.5, 1.0, 2.0, 3.0];
@@ -103,7 +108,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _alignTimer?.cancel();
     _analyzeTimer?.cancel();
+    _frameWatchdog?.cancel();
     _guidanceSub?.cancel();
+    _frameSub?.cancel();
     super.dispose();
   }
 
@@ -163,9 +170,13 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   void _startLiveGuidance() {
     _guidanceSub?.cancel();
+    _frameSub?.cancel();
+    _frameWatchdog?.cancel();
     _alignTimer?.cancel();
     _analyzeTimer?.cancel();
     _lastGuidanceTs = 0;
+    _lastFrameTs = 0;
+    _restartAttempts = 0;
     _wasAligned = false;
     setState(() {
       _analyzing = true;
@@ -174,6 +185,10 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _alignProgress = 0.12;
     });
     _guidanceSub = _camera.guidanceStream.listen(_onGuidanceFrame);
+    _frameSub = _camera.frameStream.listen((tick) {
+      _lastFrameTs = tick.ts;
+    });
+    _startFrameWatchdog();
     // 原生首帧约 100–300ms；先留一秒“稳住手机”的分析态。
     _analyzeTimer = Timer(const Duration(milliseconds: 1200), () {
       if (!mounted) return;
@@ -181,8 +196,29 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     });
   }
 
+  /// 取景纹理停住时，页面看不出任何“移动手机”的反馈。这里用心跳
+  /// 做兜底：超过 1.6s 没有新帧就轻量重启一次 session，最多三次。
+  void _startFrameWatchdog() {
+    _frameWatchdog?.cancel();
+    _frameWatchdog = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || !_live || _restarting) return;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (_lastFrameTs > 0 && now - _lastFrameTs < 1600) return;
+      if (_restartAttempts >= 3) {
+        _frameWatchdog?.cancel();
+        return;
+      }
+      _restartAttempts++;
+      _restarting = true;
+      _camera.restart().whenComplete(() {
+        if (mounted) _restarting = false;
+      });
+    });
+  }
+
   void _onGuidanceFrame(GuidanceFrame frame) {
     if (!mounted || !_live) return;
+    _lastFrameTs = math.max(_lastFrameTs, frame.ts);
     // UI 最高 4fps 更新，避免识别帧率带着整页抖动。
     if (frame.ts - _lastGuidanceTs < 240) return;
     _lastGuidanceTs = frame.ts;
@@ -583,7 +619,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
             IgnorePointer(
               child: GuideOverlay(
                 subjectBox: _guide?.subjectBox ?? const [],
-                targetBox: _guide?.targetBox ?? const [],
+                targetBox: (_guide?.targetBox.isNotEmpty ?? false)
+                    ? _guide!.targetBox
+                    : _scene.defaultTargetBox,
                 aligned: _aligned,
                 analyzing: _analyzing,
                 showGrid: _gridOn,

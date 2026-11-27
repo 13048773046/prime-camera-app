@@ -26,6 +26,7 @@ void main() {
     expect(guide.hint, '把人物放进取景框');
     expect(guide.actionLabel, '找主体');
     expect(guide.subjectBox, isEmpty);
+    expect(guide.targetBox, isNotEmpty);
   });
 
   test('人物太小喊靠近', () {
