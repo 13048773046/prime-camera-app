@@ -93,7 +93,7 @@ class PersonaRequest(BaseModel):
 
 
 class PersonaResponse(BaseModel):
-    name: str = "林晓莹"
+    name: str = "流小萤"
     role: str = "构图导演"
     line: str
     source: Literal["local", "model"] = "local"

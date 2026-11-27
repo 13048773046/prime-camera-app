@@ -87,7 +87,7 @@ async def analyze_with_model(
     """Let DeepSeek phrase the director's note around a deterministic plan.
 
     DeepSeek's public API is a text model, so we never send `image_url` here.
-    The geometry stays local; the model only turns it into 林晓莹's voice and
+    The geometry stays local; the model only turns it into 流小萤's voice and
     may adjust the confidence. This is the same split Doka uses between its
     scan plan and its client-side rendering, adapted to a text-only provider.
     """
@@ -108,7 +108,7 @@ async def analyze_with_model(
             "role": "user",
             "content": (
                 "这是端侧视觉已经算好的构图方案，请不要改主体框和目标框，"
-                "只把口令改写成林晓莹会说的话，并给出最多两条理由。\n"
+                "只把口令改写成流小萤会说的话，并给出最多两条理由。\n"
                 + json.dumps(brief, ensure_ascii=False)
             ),
         },

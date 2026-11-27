@@ -9,6 +9,9 @@ import '../services/camera_service.dart';
 import '../services/compose_api.dart';
 import '../services/scan_api.dart';
 import '../services/guidance.dart';
+import '../data/filters.dart';
+import '../services/camera_prefs.dart';
+import 'settings_page.dart';
 import '../theme.dart';
 import '../widgets/guide_ring.dart';
 import 'gallery_page.dart';
@@ -47,122 +50,6 @@ extension CaptureRatioX on CaptureRatio {
     CaptureRatio.sixteenNine => 9 / 16,
   };
 }
-
-class _FilterOption {
-  const _FilterOption(this.id, this.label, this.filter);
-
-  final String id;
-  final String label;
-  final ColorFilter? filter;
-}
-
-const List<_FilterOption> _filterOptions = [
-  _FilterOption('none', '原片', null),
-  _FilterOption(
-    'clear',
-    '清透',
-    ColorFilter.matrix(<double>[
-      1.08,
-      0,
-      0,
-      0,
-      4,
-      0,
-      1.08,
-      0,
-      0,
-      4,
-      0,
-      0,
-      1.08,
-      0,
-      4,
-      0,
-      0,
-      0,
-      1,
-      0,
-    ]),
-  ),
-  _FilterOption(
-    'warm',
-    '暖调',
-    ColorFilter.matrix(<double>[
-      1.10,
-      0,
-      0,
-      0,
-      6,
-      0,
-      1.02,
-      0,
-      0,
-      2,
-      0,
-      0,
-      0.92,
-      0,
-      -2,
-      0,
-      0,
-      0,
-      1,
-      0,
-    ]),
-  ),
-  _FilterOption(
-    'cool',
-    '冷调',
-    ColorFilter.matrix(<double>[
-      0.94,
-      0,
-      0,
-      0,
-      -2,
-      0,
-      1.0,
-      0,
-      0,
-      1,
-      0,
-      0,
-      1.10,
-      0,
-      6,
-      0,
-      0,
-      0,
-      1,
-      0,
-    ]),
-  ),
-  _FilterOption(
-    'mono',
-    '黑白',
-    ColorFilter.matrix(<double>[
-      0.2126,
-      0.7152,
-      0.0722,
-      0,
-      0,
-      0.2126,
-      0.7152,
-      0.0722,
-      0,
-      0,
-      0.2126,
-      0.7152,
-      0.0722,
-      0,
-      0,
-      0,
-      0,
-      0,
-      1,
-      0,
-    ]),
-  ),
-];
 
 class _ShotPlan {
   const _ShotPlan({
@@ -233,6 +120,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   Timer? _scanTimer;
   bool _scanInFlight = false;
   List<double>? _serverCrop;
+  List<double>? _lockedSubjectBox;
+  double _exposure = 0.0;
+  bool _showExposure = false;
+  Timer? _exposureTimer;
+  Timer? _alignConfirmTimer;
   String _lastServerReason = '';
   double _lastRoll = 0;
   double _lastPitch = 0;
@@ -242,6 +134,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   int _restartAttempts = 0;
   bool _composeEnabled = true;
   String _filterId = 'none';
+  String _recommendedFilterName = '';
+  String _recommendedFilterId = 'none';
   final List<String> _recentPhotos = [];
   int _lastGuidanceTs = 0;
   int _lastFrameTs = 0;
@@ -364,6 +258,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     _scene = widget.initialScene;
+    CameraPrefs.instance.scene = widget.initialScene;
     _sceneLocked = widget.initialScene != SceneMode.general;
     WidgetsBinding.instance.addObserver(this);
     _bootstrap();
@@ -380,6 +275,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     _scanTimer?.cancel();
     _promptTimer?.cancel();
     _distanceTimer?.cancel();
+    _exposureTimer?.cancel();
+    _alignConfirmTimer?.cancel();
     super.dispose();
   }
 
@@ -428,6 +325,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _analyzing =
           init.status == CameraStatus.ready || init.status == CameraStatus.demo;
       _guide = null;
+      _lockedSubjectBox = null;
       _aligned = false;
       _alignProgress = 0.12;
     });
@@ -448,11 +346,12 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _composeEnabled = true;
       _analyzing = true;
       _guide = null;
+      _lockedSubjectBox = null;
       _aligned = false;
       _alignProgress = 0.12;
       _lastActionLabel = null;
     });
-    _showPrompt('你好，我是林晓莹', '正在看你的画面和光线', 2400);
+    _showPrompt('你好，我是流小萤', '正在看你的画面和光线', 2400);
     _analyzeTimer = Timer(const Duration(milliseconds: 1800), () {
       if (!mounted) return;
       setState(() => _analyzing = false);
@@ -531,11 +430,12 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _composeEnabled = true;
       _analyzing = true;
       _guide = null;
+      _lockedSubjectBox = null;
       _aligned = false;
       _alignProgress = 0.12;
       _lastActionLabel = null;
     });
-    _showPrompt('你好，我是林晓莹', '正在看你的画面和光线', 2500);
+    _showPrompt('你好，我是流小萤', '正在看你的画面和光线', 2500);
     _startScanLoop();
     _guidanceSub = _camera.guidanceStream.listen(_onGuidanceFrame);
     _frameSub = _camera.frameStream.listen((tick) {
@@ -577,16 +477,20 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         zoom: _zoomValues[_zoomIndex],
         tilt: _lastPitch,
         roll: _lastRoll,
-        subjectBox: _guide?.subjectBox,
+        subjectBox: _lockedSubjectBox ?? _guide?.subjectBox,
         subjectKind: _scene == SceneMode.portrait ? 'person' : 'object',
       );
       if (!mounted || plan == null) return;
       final rect = plan.cropRect;
       if (rect.length != 4 || rect[2] <= 0 || rect[3] <= 0) return;
-      setState(() => _serverCrop = rect);
+      setState(() {
+        _serverCrop = rect;
+        _recommendedFilterName = plan.filterName;
+        _recommendedFilterId = plan.filterId;
+      });
       if (!_aligned && plan.reason.isNotEmpty && plan.reason != _lastServerReason) {
         _lastServerReason = plan.reason;
-        _showPrompt('晓莹看过画面', plan.reason, 1900);
+        _showPrompt('小萤看过画面', plan.reason, 1900);
       }
     } finally {
       _scanInFlight = false;
@@ -646,11 +550,24 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       recommendedDistance: _activePlan.recommendedDistance,
     );
     final newlyAligned = guide.confidence > 0 && _isAlignedGuide(guide);
+    final confirm = CameraPrefs.instance.alignmentConfirm;
     setState(() {
       _guide = guide;
-      _aligned = newlyAligned;
       _alignProgress = newlyAligned ? 1.0 : guide.progress;
+      if (!newlyAligned) _aligned = false;
     });
+    if (newlyAligned && confirm) {
+      _alignConfirmTimer?.cancel();
+      _alignConfirmTimer = Timer(const Duration(milliseconds: 400), () {
+        if (!mounted) return;
+        if (_guide != null && _isAlignedGuide(_guide!)) {
+          setState(() => _aligned = true);
+        }
+      });
+    } else if (!confirm) {
+      _alignConfirmTimer?.cancel();
+      setState(() => _aligned = newlyAligned);
+    }
     _maybeShowDistanceCard(guide);
     if (newlyAligned && !_wasAligned) {
       HapticFeedback.lightImpact();
@@ -658,7 +575,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     } else if (!_analyzing &&
         guide.confidence > 0 &&
         guide.actionLabel != _lastActionLabel) {
-      _showPrompt('晓莹建议', guide.hint, 1700);
+      _showPrompt('小萤建议', guide.hint, 1700);
     }
     _lastActionLabel = guide.actionLabel;
     _wasAligned = newlyAligned;
@@ -789,6 +706,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _composeEnabled = false;
       _analyzing = false;
       _guide = null;
+      _lockedSubjectBox = null;
       _aligned = false;
       _alignProgress = 0.12;
       _distanceCardOpen = false;
@@ -840,25 +758,6 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     return best;
   }
 
-  void _selectScene(SceneMode scene, {bool lock = true}) {
-    if (_scene == scene && (_sceneLocked == lock || !lock)) return;
-    _resetDistanceCard();
-    _sceneLocked = lock;
-    setState(() {
-      _scene = scene;
-      _guide = null;
-      _aligned = false;
-      _alignProgress = 0.12;
-    });
-    if (_live) {
-      _startLiveGuidance();
-    } else if (_status == CameraStatus.demo) {
-      _startDemoAnalysis();
-    } else {
-      setState(() => _analyzing = false);
-    }
-  }
-
   Future<void> _capture() async {
     if (_capturing ||
         (_status != CameraStatus.ready && _status != CameraStatus.demo)) {
@@ -875,6 +774,13 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       flash: _flashOn,
       filter: _filterId,
       ratio: _ratio.name,
+      livePhoto: CameraPrefs.instance.livePhoto,
+      saveRaw: CameraPrefs.instance.saveRaw,
+      selfieMirror: CameraPrefs.instance.selfieMirror,
+      noiseReduction: CameraPrefs.instance.noiseReduction,
+      watermark: CameraPrefs.instance.watermark,
+      watermarkStyle: CameraPrefs.instance.watermarkStyle,
+      exposure: _exposure,
     );
     await Future.delayed(const Duration(milliseconds: 80));
     if (!mounted) return;
@@ -890,6 +796,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         transitionDuration: const Duration(milliseconds: 420),
         pageBuilder: (context, animation, secondary) => ResultPage(
           photoPath: path,
+          camera: _camera,
           onSave: () => _camera.saveToAlbum(path),
           onShare: () => _camera.share(path),
           onRetake: () => Navigator.of(context).pop(),
@@ -924,19 +831,12 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     }
   }
 
-  void _toggleFlash() {
-    setState(() => _flashOn = !_flashOn);
-  }
-
-  void _toggleGrid() {
-    setState(() => _gridOn = !_gridOn);
-  }
-
   void _openGallery() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => GalleryPage(
           photos: List<String>.of(_recentPhotos),
+          camera: _camera,
           onMine: _openMine,
         ),
       ),
@@ -948,10 +848,17 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       MaterialPageRoute<void>(
         builder: (_) => MinePage(
           photoCount: _recentPhotos.length,
+          camera: _camera,
           gridOn: _gridOn,
           flashOn: _flashOn,
-          onGrid: (value) => setState(() => _gridOn = value),
-          onFlash: (value) => setState(() => _flashOn = value),
+          onGrid: (value) => setState(() {
+            _gridOn = value;
+            CameraPrefs.instance.grid = value;
+          }),
+          onFlash: (value) => setState(() {
+            _flashOn = value;
+            CameraPrefs.instance.flash = value;
+          }),
           onGallery: () {
             Navigator.of(context).pop();
             _openGallery();
@@ -990,7 +897,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         plans: _currentPlans,
         selectedIndex: _zoomIndex,
         sceneTitle: switch (_scene) {
-          SceneMode.portrait => '晓莹的 3 种拍法',
+          SceneMode.portrait => '小萤的 3 种拍法',
           SceneMode.street => '街道的 3 种拍法',
           SceneMode.landscape => '风景的 3 种拍法',
           SceneMode.still => '静物的 3 种拍法',
@@ -1009,20 +916,26 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     });
   }
 
-  void _openSettings() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => _SettingsSheet(
-        scene: _scene,
-        onScene: _selectScene,
-        gridOn: _gridOn,
-        onGrid: _toggleGrid,
-        flashOn: _flashOn,
-        onFlash: _toggleFlash,
-      ),
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const SettingsPage()),
     );
+    if (!mounted) return;
+    final changed = _scene != CameraPrefs.instance.scene;
+    setState(() {
+      _scene = CameraPrefs.instance.scene;
+      _sceneLocked = _scene != SceneMode.general;
+      _gridOn = CameraPrefs.instance.grid;
+      _flashOn = CameraPrefs.instance.flash;
+    });
+    if (changed) {
+      _resetDistanceCard();
+      if (_live) {
+        _startLiveGuidance();
+      } else if (_status == CameraStatus.demo) {
+        _startDemoAnalysis();
+      }
+    }
   }
 
   void _openRatioSheet() {
@@ -1152,6 +1065,13 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                             bottom: 10,
                             child: _buildAiFilterEntry(),
                           ),
+                          if (_recommendedFilterId != 'none' &&
+                              _recommendedFilterId != _filterId)
+                            Positioned(
+                              right: 10,
+                              bottom: 56,
+                              child: _buildAiRecommendationChip(),
+                            ),
                           if (_distanceCardOpen && _guide != null)
                             Positioned(
                               left: 30,
@@ -1249,30 +1169,101 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       builder: (context, constraints) {
         final viewport = Size(constraints.maxWidth, constraints.maxHeight);
         final previewRect = _coverRect(viewport, const Size(1080, 1920));
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            _buildPreview(),
-            IgnorePointer(
-              child: CustomPaint(painter: _ViewfinderGradePainter()),
-            ),
-            IgnorePointer(
-              child: GuideOverlay(
-                subjectBox: _guide?.subjectBox ?? const [],
-                targetBox: (_guide?.targetBox.isNotEmpty ?? false)
-                    ? _guide!.targetBox
-                    : _scene.defaultTargetBox,
-                aligned: _aligned,
-                analyzing: _analyzing,
-                showGrid: _gridOn,
-                frameRect: previewRect,
-                alignedBox: _serverCrop,
-                subjectLabel: _subjectLabel == '主体'
-                    ? '拍照主体'
-                    : '拍照主体 · $_subjectLabel',
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (details) {
+            final x = ((details.localPosition.dx - previewRect.left) /
+                    previewRect.width)
+                .clamp(0.0, 1.0);
+            final y = ((details.localPosition.dy - previewRect.top) /
+                    previewRect.height)
+                .clamp(0.0, 1.0);
+            _camera.focusAt(x, y);
+            if (CameraPrefs.instance.touchShot) {
+              _capture();
+            }
+          },
+          onVerticalDragStart: (details) {
+            if (details.localPosition.dx > previewRect.width * 0.3) return;
+            _exposureTimer?.cancel();
+            setState(() => _showExposure = true);
+          },
+          onVerticalDragUpdate: (details) {
+            if (!_showExposure) return;
+            final next = (_exposure - details.delta.dy / 90)
+                .clamp(-2.0, 2.0);
+            if ((next - _exposure).abs() < 0.001) return;
+            setState(() => _exposure = next);
+            _camera.setExposure(next);
+          },
+          onVerticalDragEnd: (_) {
+            _exposureTimer?.cancel();
+            _exposureTimer = Timer(const Duration(milliseconds: 1400), () {
+              if (mounted) setState(() => _showExposure = false);
+            });
+          },
+          onLongPressStart: (details) {
+            if (!CameraPrefs.instance.subjectGuide) return;
+            final x = ((details.localPosition.dx - previewRect.left) /
+                    previewRect.width)
+                .clamp(0.0, 1.0);
+            final y = ((details.localPosition.dy - previewRect.top) /
+                    previewRect.height)
+                .clamp(0.0, 1.0);
+            const w = 0.34;
+            const h = 0.50;
+            setState(() {
+              _lockedSubjectBox = <double>[
+                (x - w / 2).clamp(0.0, 1.0 - w),
+                (y - h / 2).clamp(0.0, 1.0 - h),
+                w,
+                h,
+              ];
+            });
+            _showPrompt('主体已锁定', 'AI 会优先分析框内的人或物；再长按一次可解除', 2000);
+          },
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              _buildPreview(),
+              IgnorePointer(
+                child: CustomPaint(painter: _ViewfinderGradePainter()),
               ),
-            ),
-          ],
+              IgnorePointer(
+                child: GuideOverlay(
+                  subjectBox: _lockedSubjectBox ?? _guide?.subjectBox ?? const [],
+                  targetBox: (_guide?.targetBox.isNotEmpty ?? false)
+                      ? _guide!.targetBox
+                      : _scene.defaultTargetBox,
+                  aligned: _aligned,
+                  analyzing: _analyzing,
+                  showGrid: _gridOn,
+                  frameRect: previewRect,
+                  alignedBox: _serverCrop,
+                  subjectLabel: _lockedSubjectBox != null
+                      ? '已锁定主体'
+                      : _subjectLabel == '主体'
+                          ? '拍照主体'
+                          : '拍照主体 · $_subjectLabel',
+                ),
+              ),
+              if (CameraPrefs.instance.level)
+                IgnorePointer(
+                  child: CustomPaint(
+                    painter: _LevelPainter(
+                      roll: _lastRoll,
+                      pitch: _lastPitch,
+                    ),
+                  ),
+                ),
+              if (_showExposure)
+                Positioned(
+                  left: 14,
+                  top: previewRect.height / 2 - 70,
+                  child: _ExposureBar(value: _exposure),
+                ),
+            ],
+          ),
         );
       },
     );
@@ -1293,12 +1284,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
-  _FilterOption get _activeFilter {
-    for (final filter in _filterOptions) {
-      if (filter.id == _filterId) return filter;
-    }
-    return _filterOptions.first;
-  }
+  FilterPreset get _activeFilter => filterById(_filterId);
 
   Widget _buildPreview() {
     switch (_status) {
@@ -1316,18 +1302,18 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
               ),
             ),
           );
-          final filter = _activeFilter.filter;
-          return filter == null
-              ? texture
-              : ColorFiltered(colorFilter: filter, child: texture);
+          return ColorFiltered(
+            colorFilter: _activeFilter.colorFilter,
+            child: texture,
+          );
         }
         return const ColoredBox(color: PrimeColor.black);
       case CameraStatus.demo:
         final image = Image.asset('assets/demo/scene.jpg', fit: BoxFit.cover);
-        final filter = _activeFilter.filter;
-        return filter == null
-            ? image
-            : ColorFiltered(colorFilter: filter, child: image);
+        return ColorFiltered(
+          colorFilter: _activeFilter.colorFilter,
+          child: image,
+        );
       case CameraStatus.permissionDenied:
       case CameraStatus.unavailable:
         return ColoredBox(
@@ -1471,6 +1457,34 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                   ),
                 ),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAiRecommendationChip() {
+    return GestureDetector(
+      onTap: () {
+        setState(() => _filterId = _recommendedFilterId);
+        _showPrompt('AI 推荐 · $_recommendedFilterName', '已套用到取景与下一张照片', 1800);
+      },
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(9, 5, 10, 5),
+        decoration: BoxDecoration(
+          color: const Color(0xE60A0A0A),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: const Color(0xFF7ECFC8).withValues(alpha: 0.55)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const _SparkleMark(size: 10, color: Color(0xFF7ECFC8)),
+            const SizedBox(width: 5),
+            Text(
+              'AI 推荐 $_recommendedFilterName',
+              style: const TextStyle(fontSize: 9, color: PrimeColor.white70),
+            ),
           ],
         ),
       ),
@@ -1829,7 +1843,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                     fit: StackFit.expand,
                     children: [
                       Image.asset(
-                        'assets/ai/xiaoying_face.png',
+                        'assets/ai/liuxiaoying_face.png',
                         fit: BoxFit.cover,
                         errorBuilder: (_, _, _) =>
                             const ColoredBox(color: Color(0xFF17171A)),
@@ -1839,7 +1853,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                         right: 0,
                         bottom: 5,
                         child: Text(
-                          '林晓莹',
+                          '流小萤',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 7.5,
@@ -2103,7 +2117,7 @@ class _DistanceCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          '林晓莹 · 构图导演',
+                          '流小萤 · 构图导演',
                           style: TextStyle(
                             fontSize: 11,
                             height: 1,
@@ -2311,7 +2325,7 @@ class _AiAvatar extends StatelessWidget {
       ),
       child: ClipOval(
         child: Image.asset(
-          'assets/ai/xiaoying_face.png',
+          'assets/ai/liuxiaoying_face.png',
           width: size - 4,
           height: size - 4,
           fit: BoxFit.cover,
@@ -2463,13 +2477,22 @@ class _FilterSheet extends StatefulWidget {
 
 class _FilterSheetState extends State<_FilterSheet> {
   late String _selected = widget.selected;
+  FilterCategory? _category = FilterCategory.base;
+
+  @override
+  void initState() {
+    super.initState();
+    final current = filterById(widget.selected);
+    _category = current.category;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final items = filtersByCategory(_category);
     return SafeArea(
       top: false,
       child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
         decoration: const BoxDecoration(
           color: Color(0xFF0B0B0B),
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -2489,6 +2512,11 @@ class _FilterSheetState extends State<_FilterSheet> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+                const SizedBox(width: 8),
+                const Text(
+                  'Doka 胶片库',
+                  style: TextStyle(fontSize: 10, color: Colors.white38),
+                ),
                 const Spacer(),
                 GestureDetector(
                   onTap: () => Navigator.of(context).maybePop(),
@@ -2500,53 +2528,116 @@ class _FilterSheetState extends State<_FilterSheet> {
                 ),
               ],
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
             SizedBox(
-              height: 104,
+              height: 30,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  for (final category in FilterCategory.values) ...[
+                    GestureDetector(
+                      onTap: () => setState(() => _category = category),
+                      child: Container(
+                        alignment: Alignment.center,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: category == _category
+                              ? Colors.white
+                              : Colors.white10,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          category.label,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: category == _category
+                                ? Colors.black
+                                : Colors.white60,
+                            fontWeight: category == _category
+                                ? FontWeight.w600
+                                : FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 112,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
-                itemCount: _filterOptions.length,
+                itemCount: items.length,
                 separatorBuilder: (_, _) => const SizedBox(width: 10),
                 itemBuilder: (context, index) {
-                  final filter = _filterOptions[index];
+                  final filter = items[index];
                   final active = filter.id == _selected;
                   return GestureDetector(
                     onTap: () {
                       setState(() => _selected = filter.id);
-                      widget.onSelect(filter.id, filter.label);
+                      widget.onSelect(filter.id, filter.name);
                     },
                     behavior: HitTestBehavior.opaque,
                     child: SizedBox(
                       width: 72,
                       child: Column(
                         children: [
-                          Container(
-                            width: 72,
-                            height: 72,
-                            clipBehavior: Clip.antiAlias,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: active ? Colors.white : Colors.white12,
-                                width: active ? 1.6 : 0.8,
-                              ),
-                            ),
-                            child: ColorFiltered(
-                              colorFilter:
-                                  filter.filter ??
-                                  const ColorFilter.mode(
-                                    Colors.transparent,
-                                    BlendMode.dst,
+                          Stack(
+                            children: [
+                              Container(
+                                width: 72,
+                                height: 72,
+                                clipBehavior: Clip.antiAlias,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: active
+                                        ? Colors.white
+                                        : Colors.white12,
+                                    width: active ? 1.6 : 0.8,
                                   ),
-                              child: Image.asset(
-                                'assets/demo/scene.jpg',
-                                fit: BoxFit.cover,
+                                ),
+                                child: ColorFiltered(
+                                  colorFilter: filter.colorFilter,
+                                  child: Image.asset(
+                                    'assets/demo/scene.jpg',
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
                               ),
-                            ),
+                              if (filter.pro)
+                                Positioned(
+                                  right: 5,
+                                  top: 5,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 5,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFC9A86A),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text(
+                                      'PRO',
+                                      style: TextStyle(
+                                        fontSize: 7,
+                                        color: Colors.black,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
                           const SizedBox(height: 7),
                           Text(
-                            filter.label,
+                            filter.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 11,
                               color: active ? Colors.white : Colors.white54,
@@ -2562,10 +2653,12 @@ class _FilterSheetState extends State<_FilterSheet> {
                 },
               ),
             ),
-            const SizedBox(height: 6),
-            const Text(
-              '滤镜会同时应用到取景预览和下一张照片。',
-              style: TextStyle(fontSize: 10, color: Colors.white38),
+            const SizedBox(height: 8),
+            Text(
+              _category == FilterCategory.base
+                  ? '原片与基础调色；继续左滑切换胶片系列。'
+                  : '${_category?.label ?? '全部'} · ${items.length} 款；带 PRO 标记的滤镜属于 Doka Pro 胶片库。',
+              style: const TextStyle(fontSize: 10, color: Colors.white38),
             ),
           ],
         ),
@@ -2874,148 +2967,102 @@ class _RatioSheet extends StatelessWidget {
   }
 }
 
-class _SettingsSheet extends StatelessWidget {
-  const _SettingsSheet({
-    required this.scene,
-    required this.onScene,
-    required this.gridOn,
-    required this.onGrid,
-    required this.flashOn,
-    required this.onFlash,
-  });
 
-  final SceneMode scene;
-  final ValueChanged<SceneMode> onScene;
-  final bool gridOn;
-  final VoidCallback onGrid;
-  final bool flashOn;
-  final VoidCallback onFlash;
+class _ExposureBar extends StatelessWidget {
+  const _ExposureBar({required this.value});
+
+  final double value;
 
   @override
   Widget build(BuildContext context) {
+    final t = (value + 2) / 4;
     return Container(
-      decoration: const BoxDecoration(
-        color: PrimeColor.black,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      width: 34,
+      height: 140,
+      decoration: BoxDecoration(
+        color: const Color(0x99000000),
+        borderRadius: BorderRadius.circular(17),
+        border: Border.all(color: PrimeColor.white12, width: 0.8),
       ),
-      child: SafeArea(
-        top: false,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(
-                child: Container(
-                  width: 38,
-                  height: 3,
-                  decoration: BoxDecoration(
-                    color: PrimeColor.white24,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                '设置',
-                style: TextStyle(
-                  fontSize: 20,
-                  color: PrimeColor.white,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 18),
-              const Text(
-                '拍摄场景',
-                style: TextStyle(fontSize: 13, color: PrimeColor.white70),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                '默认自动判断；也可以锁定一个场景，让 AI 按它给拍法。',
-                style: TextStyle(fontSize: 11, color: PrimeColor.white38),
-              ),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
+      child: Column(
+        children: [
+          const SizedBox(height: 8),
+          Text(
+            value >= 0 ? '+${value.toStringAsFixed(1)}' : value.toStringAsFixed(1),
+            style: const TextStyle(fontSize: 9, color: PrimeColor.white70, fontWeight: FontWeight.w600),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Stack(
+                alignment: Alignment.center,
                 children: [
-                  for (final item in SceneMode.values)
-                    GestureDetector(
-                      key: ValueKey('scene-${item.name}'),
-                      onTap: () {
-                        onScene(item);
-                        Navigator.of(context).pop();
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 13,
-                          vertical: 7,
-                        ),
-                        decoration: BoxDecoration(
-                          color: item == scene
-                              ? PrimeColor.white
-                              : PrimeColor.white06,
-                          borderRadius: BorderRadius.circular(999),
-                          border: Border.all(
-                            color: item == scene
-                                ? Colors.transparent
-                                : PrimeColor.white12,
-                            width: 0.8,
-                          ),
-                        ),
-                        child: Text(
-                          item.label,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: item == scene
-                                ? PrimeColor.black
-                                : PrimeColor.white54,
-                            fontWeight: item == scene
-                                ? FontWeight.w600
-                                : FontWeight.w400,
-                          ),
-                        ),
+                  Container(width: 2, color: PrimeColor.white24),
+                  Align(
+                    alignment: Alignment(0, 1 - t * 2),
+                    child: Container(
+                      width: 10,
+                      height: 10,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF7ECFC8),
+                        shape: BoxShape.circle,
                       ),
                     ),
+                  ),
                 ],
               ),
-              const SizedBox(height: 12),
-              _toggleRow('构图网格', gridOn, onGrid),
-              _toggleRow('闪光灯', flashOn, onFlash),
-              _row('保存水印', '开启'),
-              _row('版本', '0.3.2'),
-            ],
+            ),
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _toggleRow(String label, bool on, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: _row(label, on ? '开启' : '关闭'),
-    );
-  }
-
-  Widget _row(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Row(
-        children: [
-          Text(
-            label,
-            style: const TextStyle(fontSize: 13, color: PrimeColor.white70),
-          ),
-          const Spacer(),
-          Text(
-            value,
-            style: const TextStyle(fontSize: 12, color: PrimeColor.white38),
-          ),
+          const Text('EV', style: TextStyle(fontSize: 8, color: PrimeColor.white38)),
+          const SizedBox(height: 8),
         ],
       ),
     );
   }
+}
+
+class _LevelPainter extends CustomPainter {
+  _LevelPainter({required this.roll, required this.pitch});
+
+  final double roll;
+  final double pitch;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final line = Paint()
+      ..color = const Color(0x99FFFFFF)
+      ..strokeWidth = 1.0;
+    final angle = (roll.clamp(-1.0, 1.0)) * 0.18;
+    final half = size.width * 0.16;
+    final dx = math.cos(angle) * half;
+    final dy = math.sin(angle) * half;
+    canvas.drawLine(center.translate(-dx, -dy), center.translate(dx, dy), line);
+    canvas.drawCircle(center, 2.2, Paint()..color = const Color(0xCC7ECFC8));
+
+    final bubble = center.translate(
+      (pitch.clamp(-1.0, 1.0)) * size.width * 0.12,
+      0,
+    );
+    canvas.drawCircle(
+      bubble,
+      4.0,
+      Paint()
+        ..color = const Color(0xCCFFFFFF)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0,
+    );
+    final label = TextPainter(
+      text: TextSpan(
+        text: (roll.abs() < 0.02 ? '水平' : 'ROLL ${(roll * 18).toStringAsFixed(0)}°'),
+        style: const TextStyle(fontSize: 9, color: Color(0x99FFFFFF)),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    label.paint(canvas, center.translate(-label.width / 2, 12));
+  }
+
+  @override
+  bool shouldRepaint(covariant _LevelPainter old) =>
+      old.roll != roll || old.pitch != pitch;
 }

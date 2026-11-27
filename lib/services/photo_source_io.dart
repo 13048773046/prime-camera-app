@@ -13,3 +13,11 @@ Widget buildPhotoImage(String? path, {BoxFit fit = BoxFit.cover}) {
   }
   return Image.file(File(path), fit: fit, gaplessPlayback: true);
 }
+
+DateTime? photoModified(String path) {
+  try {
+    return File(path).lastModifiedSync();
+  } catch (_) {
+    return null;
+  }
+}

@@ -175,6 +175,31 @@ class CameraService {
     }
   }
 
+  Future<void> focusAt(double x, double y) async {
+    try {
+      await _channel.invokeMethod<void>('focusAt', <String, dynamic>{
+        'x': x,
+        'y': y,
+      });
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  Future<void> setExposure(double value) async {
+    try {
+      await _channel.invokeMethod<void>('setExposure', <String, dynamic>{
+        'value': value,
+      });
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
   Future<double?> switchCamera() async {
     try {
       final result = await _channel.invokeMapMethod<String, dynamic>(
@@ -206,17 +231,102 @@ class CameraService {
     bool flash = false,
     String filter = 'none',
     String ratio = 'threeFour',
+    bool livePhoto = false,
+    bool saveRaw = false,
+    bool selfieMirror = true,
+    bool noiseReduction = true,
+    bool watermark = true,
+    String watermarkStyle = 'minimal',
+    double exposure = 0.0,
   }) async {
     try {
       return await _channel.invokeMethod<String>('takePhoto', <String, dynamic>{
         'flash': flash,
         'filter': filter,
         'ratio': ratio,
+        'livePhoto': livePhoto,
+        'saveRaw': saveRaw,
+        'selfieMirror': selfieMirror,
+        'noiseReduction': noiseReduction,
+        'watermark': watermark,
+        'watermarkStyle': watermarkStyle,
+        'exposure': exposure,
       });
     } on MissingPluginException {
       return null;
     } on PlatformException {
       return null;
+    }
+  }
+
+  Future<String?> editPhoto({
+    required String path,
+    String filter = 'none',
+    String ratio = 'threeFour',
+    int rotate = 0,
+    bool flip = false,
+    String border = 'minimal',
+    bool watermark = true,
+  }) async {
+    try {
+      return await _channel.invokeMethod<String>('editPhoto', {
+        'path': path,
+        'filter': filter,
+        'ratio': ratio,
+        'rotate': rotate,
+        'flip': flip,
+        'border': border,
+        'watermark': watermark,
+      });
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  Future<List<String>> pickPhotos() async {
+    try {
+      final list = await _channel.invokeListMethod<String>('pickPhotos');
+      return list ?? <String>[];
+    } on MissingPluginException {
+      return <String>[];
+    } on PlatformException {
+      return <String>[];
+    }
+  }
+
+  Future<List<String>> listPhotos() async {
+    try {
+      final list = await _channel.invokeListMethod<String>('listPhotos');
+      return list ?? <String>[];
+    } on MissingPluginException {
+      return <String>[];
+    } on PlatformException {
+      return <String>[];
+    }
+  }
+
+  Future<bool> deletePhoto(String path) async {
+    try {
+      return await _channel.invokeMethod<bool>('deletePhoto', {'path': path}) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> shareFiles(List<String> paths) async {
+    if (paths.isEmpty) return false;
+    try {
+      return await _channel.invokeMethod<bool>('shareFiles', {'paths': paths}) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
     }
   }
 

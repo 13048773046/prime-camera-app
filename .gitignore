@@ -36,3 +36,7 @@ analysis/doka/doka_decompile_pack/
 
 # Generated scan templates
 backend/static/templates/*.jpg
+
+# local auth/vip store
+backend/prime.db
+backend/*.db

@@ -13,6 +13,8 @@ from .doka import analyze_frame, make_plan, parse_box, render_templates
 from .geometry import decode_frame, rule_compose
 from .persona import PERSONA_NAME, PERSONA_ROLE, local_reason
 from .rate_limit import CounterStore
+from .api_doka import app_router as doka_app_router
+from .api_doka import router as doka_router
 from .schemas import (
     CameraFilterModel,
     ComposeRequest,
@@ -37,6 +39,8 @@ app.add_middleware(
 backend_root = Path(__file__).resolve().parents[1]
 template_dir = backend_root / settings.template_dir
 template_dir.mkdir(parents=True, exist_ok=True)
+app.include_router(doka_router, prefix="/ai_camera")
+app.include_router(doka_app_router)
 app.mount("/static", StaticFiles(directory=str(backend_root / "static")), name="static")
 
 counters = CounterStore(
@@ -214,6 +218,55 @@ async def scan(
         ),
     )
     return ScanEnvelope(code=0, message="ok", data=data)
+
+
+@app.post("/ai_camera/v2", response_model=ScanEnvelope)
+async def doka_scan(request: Request, authorization: str | None = Header(default=None)):
+    """Doka `POST ai_camera/v2` 的同构入口。
+
+    客户端字段名与 `/v1/scan` 完全一致；这里只做 multipart 解包后复用同一套
+    几何/模板/文案逻辑，避免两套响应结构漂移。
+    """
+    form = await request.form()
+    file = form.get("file")
+    if file is None or not hasattr(file, "read"):
+        raise HTTPException(status_code=400, detail="缺少 file")
+
+    def as_int(name: str, default: int) -> int:
+        try:
+            return int(str(form.get(name, default)))
+        except ValueError:
+            return default
+
+    def as_float(name: str, default: float) -> float:
+        try:
+            return float(str(form.get(name, default)))
+        except ValueError:
+            return default
+
+    return await scan(
+        request=request,
+        file=file,
+        shoot_type=str(form.get("shoot_type", "preview")),
+        direction=str(form.get("direction", "portrait")),
+        compose_times=as_int("compose_times", 0),
+        scan_focal_length=as_float("scan_focal_length", 1.0),
+        ai_filter=str(form.get("ai_filter", "")),
+        timestamp=str(form.get("timestamp", "")),
+        comp_scene=str(form.get("comp_scene", "auto")),
+        recommend_mode=str(form.get("recommend_mode", "auto")),
+        ai_filter_preferences=str(form.get("ai_filter_preferences", "")),
+        language=str(form.get("language", "zh")),
+        region=str(form.get("region", "CN")),
+        distribution=str(form.get("distribution", "store")),
+        subject_box=str(form.get("subject_box", "")),
+        subject_kind=str(form.get("subject_kind", "person")),
+        aspect=str(form.get("aspect", "3:4")),
+        zoom=as_float("zoom", 1.0),
+        tilt=as_float("tilt", 0.0),
+        roll=as_float("roll", 0.0),
+        x_device_id=request.headers.get("x-device-id"),
+    )
 
 
 @app.post("/v1/persona/line", response_model=PersonaResponse)

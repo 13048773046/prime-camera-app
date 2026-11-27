@@ -103,6 +103,6 @@ def test_persona_falls_back_to_local_line():
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["name"] == "林晓莹"
+    assert body["name"] == "流小萤"
     assert body["line"]
     assert body["source"] in {"local", "model"}

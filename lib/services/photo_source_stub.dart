@@ -4,3 +4,5 @@ import 'package:flutter/material.dart';
 Widget buildPhotoImage(String? path, {BoxFit fit = BoxFit.cover}) {
   return Image.asset('assets/demo/scene.jpg', fit: fit);
 }
+
+DateTime? photoModified(String path) => null;

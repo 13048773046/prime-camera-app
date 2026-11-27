@@ -39,9 +39,9 @@ Camera frame
 Doka 的服务端是自研视觉服务；PRIME 没有同等规模的视觉模型，因此：
 
 - 构图几何在服务端 `doka.py` 与端侧 Vision 里完成；
-- DeepSeek 只接收已经结构化的构图 brief，输出林晓莹的口令与理由；
+- DeepSeek 只接收已经结构化的构图 brief，输出流小萤的口令与理由；
 - 不向 DeepSeek 发送 `image_url`，避免使用它不支持的图片输入格式；
-- `AI_API_KEY` 为空时自动退回本地林晓莹文案。
+- `AI_API_KEY` 为空时自动退回本地流小萤文案。
 
 ## 4. 运行
 
@@ -66,3 +66,24 @@ flutter build ios --release --no-codesign \
 ```
 
 不指定时 IPA 仍可完整使用，构图由端侧 Vision + 本地规则驱动。
+
+## v0.4.0 后端补齐（与 `ApiService` 对齐）
+
+| Doka 路径 | 本地实现 | 说明 |
+|---|---|---|
+| `ai_camera/auth/get_code` | `POST /ai_camera/auth/get_code` | scene=login/bind；本地联调返回 `dev_code` |
+| `ai_camera/auth/login` | `POST /ai_camera/auth/login` | 手机号 + 验证码，返回 `AuthData` 字段 |
+| `ai_camera/auth/me` | `POST /ai_camera/auth/me` | Bearer token，返回 `CurrentUserData` |
+| `ai_camera/auth/bind_phone` | 同路径 | 需要 scene=bind 的验证码 |
+| `ai_camera/auth/wechat_login` / `bind_wechat` / `unbind_wechat` / `replace_wechat` / `verify_wechat_change` | 同路径 | 未配置微信开放平台时为本地演示身份 |
+| `ai_camera/auth/delete_account` | 同路径 | 软删除，token 立即失效 |
+| `ai_camera/v2` | 同路径 | multipart 解包后复用 `/v1/scan` |
+| `ai_camera/vip/products` / `vip/status` | `GET` 同路径 | 套餐、权益、免费次数 |
+| `ai_camera/pay/create_order` / `pay/order_status` | 同路径 | 微信支付参数占位；不伪造成功 |
+| `ai_camera/pay/google_play/verify` | 同路径 | 未配置 Google Play 时返回失败 |
+| `api/v1/redeem_vip_code` | 同路径 | `PRIME2026` / `PRIME-30` / `PRIME-LIFETIME` 本地体验码 |
+| `app/config_doka` | 同路径 | 功能开关 |
+| `app/version_doka_android` | 同路径 | 版本/更新占位 |
+| `app/security/report` | 同路径 | 写入本地事件表 |
+
+存储为 `backend/prime.db`（SQLite，已加入 `.gitignore`）。生产部署应替换 `PRIME_AUTH_SECRET`，关闭 `PRIME_DEV_AUTH`，并将验证码改接短信服务。

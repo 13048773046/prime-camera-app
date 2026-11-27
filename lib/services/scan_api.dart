@@ -28,6 +28,21 @@ class ScanPlan {
   final String filterName;
   final String? templateUrl;
 
+  /// 服务端只回中文滤镜名；沿用 Doka 的命名并映射到本地胶片 id。
+  String get filterId => switch (filterName) {
+        '清透' => 'clear',
+        '暖调' => 'warm',
+        '冷调' => 'cool',
+        '黑白' => 'mono',
+        'Doka S50' => 'doka_s50',
+        'Doka S100' => 'doka_s100',
+        'Doka S400' => 'doka_s400',
+        'Classic Chrome' => 'classic_chrome',
+        'Portra 400' => 'portra400',
+        'Gold 200' => 'kodak_gold',
+        _ => 'none',
+      };
+
   factory ScanPlan.fromData(Map<String, dynamic> data) {
     Map<String, dynamic> map(dynamic value) =>
         value is Map ? Map<String, dynamic>.from(value) : const {};

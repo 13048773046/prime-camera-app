@@ -1,9 +1,11 @@
 import AVFoundation
 import CoreImage
+import CoreMedia
 import CoreMotion
 import Flutter
 import ImageIO
 import Photos
+import PhotosUI
 import UIKit
 import Vision
 
@@ -30,6 +32,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private let visionQueue = DispatchQueue(label: "com.prime.camera.vision")
   private let videoOutput = AVCaptureVideoDataOutput()
   private let photoOutput = AVCapturePhotoOutput()
+  private var photoPicker: PrimePhotoPicker?
 
   // 实时构图：Vision 以 ~6fps 找人脸/人体，CoreMotion 读取手机水平角。
   private let visionLock = NSLock()
@@ -52,7 +55,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private var currentPosition: AVCaptureDevice.Position = .back
   private var currentZoom: CGFloat = 1.0
 
-  private var photoDelegates: [Int64: PrimePhotoDelegate] = [:]
+  private var photoDelegates: [Int64: AVCapturePhotoCaptureDelegate] = [:]
 
   init(registrar: FlutterApplicationRegistrar) {
     registry = registrar.textures()
@@ -197,16 +200,57 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       switchCamera(result: result)
     case "capturePreviewJpeg":
       capturePreviewJpeg(result: result)
+    case "focusAt":
+      let args = call.arguments as? [String: Any]
+      let x = (args?["x"] as? NSNumber)?.doubleValue ?? 0.5
+      let y = (args?["y"] as? NSNumber)?.doubleValue ?? 0.5
+      focusAt(x: x, y: y, result: result)
+    case "setExposure":
+      let value = (call.arguments as? [String: Any])?["value"] as? NSNumber
+      setExposure(CGFloat(truncating: value ?? 0), result: result)
     case "takePhoto":
       let args = call.arguments as? [String: Any]
       let flash = args?["flash"] as? Bool ?? false
       let filter = args?["filter"] as? String ?? "none"
       let ratio = args?["ratio"] as? String ?? "threeFour"
-      takePhoto(flash: flash, filter: filter, ratio: ratio, result: result)
+      let selfieMirror = args?["selfieMirror"] as? Bool ?? true
+      let watermark = args?["watermark"] as? Bool ?? true
+      let watermarkStyle = args?["watermarkStyle"] as? String ?? "minimal"
+      let livePhoto = args?["livePhoto"] as? Bool ?? false
+      takePhoto(
+        flash: flash,
+        filter: filter,
+        ratio: ratio,
+        selfieMirror: selfieMirror,
+        watermark: watermark,
+        watermarkStyle: watermarkStyle,
+        livePhoto: livePhoto,
+        result: result
+      )
     case "saveToAlbum":
       saveToAlbum(call: call, result: result)
     case "share":
       share(call: call, result: result)
+    case "listPhotos":
+      listPhotos(result: result)
+    case "pickPhotos":
+      pickPhotos(result: result)
+    case "editPhoto":
+      let args = call.arguments as? [String: Any]
+      editPhoto(
+        path: args?["path"] as? String ?? "",
+        filter: args?["filter"] as? String ?? "none",
+        ratio: args?["ratio"] as? String ?? "threeFour",
+        rotate: args?["rotate"] as? Int ?? 0,
+        flip: args?["flip"] as? Bool ?? false,
+        border: args?["border"] as? String ?? "minimal",
+        watermark: args?["watermark"] as? Bool ?? true,
+        result: result
+      )
+    case "deletePhoto":
+      deletePhoto(call: call, result: result)
+    case "shareFiles":
+      shareFiles(call: call, result: result)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -430,6 +474,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       )
     }
     session.addOutput(photoOutput)
+    photoOutput.isLivePhotoCaptureEnabled = photoOutput.isLivePhotoCaptureSupported
     updatePhotoOutputCapabilities(for: device, position: position)
 
     isConfigured = true
@@ -839,12 +884,79 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     }
   }
 
+  // MARK: - Focus / exposure
+
+  private func focusAt(x: Double, y: Double, result: @escaping FlutterResult) {
+    sessionQueue.async { [weak self] in
+      guard let self = self, let device = self.currentDevice else {
+        DispatchQueue.main.async { result(false) }
+        return
+      }
+      do {
+        try device.lockForConfiguration()
+        if device.isFocusPointOfInterestSupported {
+          let point = CGPoint(
+            x: CGFloat(min(max(x, 0), 1)),
+            y: CGFloat(min(max(y, 0), 1))
+          )
+          device.focusPointOfInterest = point
+          device.focusMode = .autoFocus
+        }
+        // 轻点后 1.2 秒回到连续对焦，避免一直锁在错误位置。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+          self?.sessionQueue.async {
+            guard let self = self, let device = self.currentDevice else { return }
+            do {
+              try device.lockForConfiguration()
+              if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+              }
+              device.unlockForConfiguration()
+            } catch {
+              // 设备可能已被切换，忽略。
+            }
+          }
+        }
+        device.unlockForConfiguration()
+        DispatchQueue.main.async { result(true) }
+      } catch {
+        DispatchQueue.main.async { result(false) }
+      }
+    }
+  }
+
+  private func setExposure(_ value: CGFloat, result: @escaping FlutterResult) {
+    sessionQueue.async { [weak self] in
+      guard let self = self, let device = self.currentDevice else {
+        DispatchQueue.main.async { result(false) }
+        return
+      }
+      let bias = max(-2.0, min(2.0, value))
+      guard device.isExposureTargetBiasSupported(bias) else {
+        DispatchQueue.main.async { result(false) }
+        return
+      }
+      do {
+        try device.lockForConfiguration()
+        device.setExposureTargetBias(Float(bias), completionHandler: nil)
+        device.unlockForConfiguration()
+        DispatchQueue.main.async { result(true) }
+      } catch {
+        DispatchQueue.main.async { result(false) }
+      }
+    }
+  }
+
   // MARK: - Photo
 
   private func takePhoto(
     flash: Bool,
     filter: String,
     ratio: String,
+    selfieMirror: Bool,
+    watermark: Bool,
+    watermarkStyle: String,
+    livePhoto: Bool,
     result: @escaping FlutterResult
   ) {
     sessionQueue.async { [weak self] in
@@ -868,13 +980,19 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
         settings = AVCapturePhotoSettings()
       }
       settings.flashMode = (flash && self.currentDevice?.hasFlash == true) ? .on : .off
+      var liveMovieURL: URL? = nil
+      if livePhoto && self.photoOutput.isLivePhotoCaptureSupported {
+        let movie = FileManager.default.temporaryDirectory
+          .appendingPathComponent("prime-live-\(UUID().uuidString).mov")
+        settings.livePhotoMovieFileURL = movie
+        liveMovieURL = movie
+      }
       settings.photoQualityPrioritization = .quality
       settings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
 
       let id = settings.uniqueID
-      let delegate = PrimePhotoDelegate { [weak self] photo, error in
+      let finish: (Data?, URL?, Error?) -> Void = { [weak self] data, movie, error in
         guard let self = self else { return }
-        // 回调可能在任意线程；字典只在 sessionQueue 上增删，避免并发写崩。
         self.sessionQueue.async { [weak self] in
           self?.photoDelegates[id] = nil
         }
@@ -884,20 +1002,30 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
           }
           return
         }
-        guard
-          let photo = photo,
-          let data = photo.fileDataRepresentation()
-        else {
+        guard let data = data else {
           DispatchQueue.main.async {
             result(FlutterError(code: "capture", message: "照片数据为空", details: nil))
           }
           return
         }
-        let finalData = self.applyFilter(data, filter: filter, ratio: ratio) ?? data
-        let url = FileManager.default.temporaryDirectory
-          .appendingPathComponent("prime-\(UUID().uuidString).jpg")
+        var finalData = self.applyFilter(data, filter: filter, ratio: ratio) ?? data
+        if selfieMirror && self.currentPosition == .front,
+           let ui = UIImage(data: finalData) {
+          finalData = self.flipHorizontal(ui).jpegData(compressionQuality: 0.95) ?? finalData
+        }
+        if watermark, let ui = UIImage(data: finalData) {
+          finalData = self.decorate(ui, border: watermarkStyle, watermark: true)
+            .jpegData(compressionQuality: 0.95) ?? finalData
+        }
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+          .appendingPathComponent("PRIME", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("prime-\(UUID().uuidString).jpg")
         do {
           try finalData.write(to: url, options: .atomic)
+          if let movie = movie {
+            self.saveLivePhoto(data: finalData, movieURL: movie)
+          }
           DispatchQueue.main.async { result(url.path) }
         } catch {
           DispatchQueue.main.async {
@@ -905,7 +1033,14 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
           }
         }
       }
-      self.photoDelegates[id] = delegate
+      let delegate: AVCapturePhotoCaptureDelegate
+      if liveMovieURL != nil {
+        delegate = PrimeLivePhotoDelegate(handler: finish)
+      } else {
+        delegate = PrimePhotoDelegate { photo, error in
+          finish(photo?.fileDataRepresentation(), nil, error)
+        }
+      }
       self.photoOutput.capturePhoto(with: settings, delegate: delegate)
     }
   }
@@ -936,46 +1071,224 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     ))
   }
 
-  /// 预览里用 Flutter ColorFilter 近似，成片用 CoreImage 落到同一套色彩。
+  private func editPhoto(
+    path: String,
+    filter: String,
+    ratio: String,
+    rotate: Int,
+    flip: Bool,
+    border: String,
+    watermark: Bool,
+    result: @escaping FlutterResult
+  ) {
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      guard let self = self else { return }
+      guard
+        let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+        var image = CIImage(data: data, options: [.applyOrientationProperty: true])
+      else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "edit", message: "无法读取照片", details: nil))
+        }
+        return
+      }
+      image = self.crop(image, ratio: ratio)
+      image = self.applyLook(image, id: filter)
+      guard let cg = CIContext(options: nil).createCGImage(image, from: image.extent) else {
+        DispatchQueue.main.async { result(nil) }
+        return
+      }
+      var ui = UIImage(cgImage: cg, scale: 1, orientation: .up)
+      ui = self.rotate(ui, quarterTurns: rotate)
+      if flip { ui = self.flipHorizontal(ui) }
+      ui = self.decorate(ui, border: border, watermark: watermark)
+      guard let finalData = ui.jpegData(compressionQuality: 0.95) else {
+        DispatchQueue.main.async { result(nil) }
+        return
+      }
+      let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("PRIME", isDirectory: true)
+      try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+      let url = dir.appendingPathComponent("edit-\(UUID().uuidString).jpg")
+      do {
+        try finalData.write(to: url, options: .atomic)
+        DispatchQueue.main.async { result(url.path) }
+      } catch {
+        DispatchQueue.main.async { result(nil) }
+      }
+    }
+  }
+
+  private func rotate(_ image: UIImage, quarterTurns: Int) -> UIImage {
+    let turns = ((quarterTurns % 4) + 4) % 4
+    guard turns != 0 else { return image }
+    let radians = CGFloat(turns) * .pi / 2
+    let size = turns % 2 == 0
+      ? image.size
+      : CGSize(width: image.size.height, height: image.size.width)
+    let renderer = UIGraphicsImageRenderer(size: size)
+    return renderer.image { context in
+      let cg = context.cgContext
+      cg.translateBy(x: size.width / 2, y: size.height / 2)
+      cg.rotate(by: radians)
+      image.draw(in: CGRect(
+        x: -image.size.width / 2,
+        y: -image.size.height / 2,
+        width: image.size.width,
+        height: image.size.height
+      ))
+    }
+  }
+
+  private func flipHorizontal(_ image: UIImage) -> UIImage {
+    let renderer = UIGraphicsImageRenderer(size: image.size)
+    return renderer.image { context in
+      let cg = context.cgContext
+      cg.translateBy(x: image.size.width, y: 0)
+      cg.scaleBy(x: -1, y: 1)
+      image.draw(in: CGRect(origin: .zero, size: image.size))
+    }
+  }
+
+  private func decorate(_ image: UIImage, border: String, watermark: Bool) -> UIImage {
+    let margin: CGFloat = border == "white" ? 26 : (border == "magazine" ? 22 : 0)
+    let bottomExtra: CGFloat = border == "magazine" ? 64 : (border == "film" ? 34 : 0)
+    let size = CGSize(width: image.size.width + margin * 2, height: image.size.height + margin * 2 + bottomExtra)
+    let renderer = UIGraphicsImageRenderer(size: size)
+    return renderer.image { context in
+      let cg = context.cgContext
+      switch border {
+      case "white":
+        UIColor(white: 0.96, alpha: 1).setFill()
+      case "film":
+        UIColor(white: 0.06, alpha: 1).setFill()
+      case "magazine":
+        UIColor(white: 0.08, alpha: 1).setFill()
+      default:
+        UIColor.black.setFill()
+      }
+      cg.fill(CGRect(origin: .zero, size: size))
+      image.draw(in: CGRect(x: margin, y: margin, width: image.size.width, height: image.size.height))
+
+      if border == "film" {
+        UIColor(white: 0.22, alpha: 1).setFill()
+        let hole: CGFloat = 7
+        var x: CGFloat = 8
+        while x < size.width - 8 {
+          cg.fillEllipse(in: CGRect(x: x, y: 6, width: hole, height: hole))
+          cg.fillEllipse(in: CGRect(x: x, y: size.height - hole - 6, width: hole, height: hole))
+          x += hole + 7
+        }
+      }
+
+      if watermark {
+        let text = "PRIME  ·  \(Date().formatted(date: .numeric, time: .shortened))" as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+          .font: UIFont.systemFont(ofSize: border == "magazine" ? 11 : 8, weight: .semibold),
+          .foregroundColor: border == "white" ? UIColor.black.withAlphaComponent(0.55) : UIColor.white.withAlphaComponent(0.72),
+          .kern: 1.2,
+        ]
+        let textSize = text.size(withAttributes: attrs)
+        let point = CGPoint(
+          x: margin + 8,
+          y: size.height - textSize.height - (border == "magazine" ? 18 : 8)
+        )
+        text.draw(at: point, withAttributes: attrs)
+      }
+    }
+  }
+
+  /// 预览用 Flutter ColorFilter 矩阵近似；成片用 CoreImage 按同一组
+  /// Doka 胶片 id 再渲染一次。这里覆盖 1.3.20 滤镜库的全部系列。
   private func applyFilter(_ data: Data, filter: String, ratio: String) -> Data? {
     guard var input = CIImage(
       data: data,
       options: [.applyOrientationProperty: true]
     ) else { return data }
     input = crop(input, ratio: ratio)
-    if filter == "none" { return render(input) }
-    let output: CIImage
-    switch filter {
+    return render(applyLook(input, id: filter))
+  }
+
+  private func applyLook(_ input: CIImage, id: String) -> CIImage {
+    if id == "none" || id.isEmpty { return input }
+    switch id {
     case "mono":
-      output = input.applyingFilter("CIPhotoEffectMono")
+      return input.applyingFilter("CIPhotoEffectMono")
+    case "agfa_ap100":
+      return input.applyingFilter("CIPhotoEffectNoir")
+        .applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.12])
+    case "bw_high":
+      return input.applyingFilter("CIPhotoEffectTonal")
+        .applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.22])
     case "clear":
-      output = input.applyingFilter("CIColorControls", parameters: [
-        kCIInputSaturationKey: 1.08,
-        kCIInputContrastKey: 1.10,
-        kCIInputBrightnessKey: 0.03,
-      ])
+      return controls(input, saturation: 1.08, contrast: 1.10, brightness: 0.03)
     case "warm":
-      output = input
-        .applyingFilter("CITemperatureAndTint", parameters: [
-          "inputNeutral": CIVector(x: 6500, y: 0),
-          "inputTargetNeutral": CIVector(x: 5200, y: 0),
-        ])
-        .applyingFilter("CIColorControls", parameters: [
-          kCIInputSaturationKey: 1.04,
-        ])
+      return temp(controls(input, saturation: 1.04, contrast: 1.04), from: 6500, to: 5200)
     case "cool":
-      output = input
-        .applyingFilter("CITemperatureAndTint", parameters: [
-          "inputNeutral": CIVector(x: 6500, y: 0),
-          "inputTargetNeutral": CIVector(x: 8000, y: 0),
-        ])
-        .applyingFilter("CIColorControls", parameters: [
-          kCIInputSaturationKey: 1.02,
-        ])
+      return temp(controls(input, saturation: 1.02, contrast: 1.04), from: 6500, to: 8000)
+    case "doka_s50":
+      return controls(temp(input, from: 6500, to: 5200), saturation: 0.95, contrast: 0.92, brightness: 0.14)
+    case "doka_s100":
+      return controls(input, saturation: 1.0, contrast: 0.98, brightness: 0.08)
+    case "doka_s160":
+      return controls(temp(input, from: 6500, to: 5600), saturation: 1.06, contrast: 1.02, brightness: 0.03)
+    case "doka_s200":
+      return controls(temp(input, from: 6500, to: 6000), saturation: 1.0, contrast: 1.10, brightness: 0.0)
+    case "doka_s400":
+      return controls(temp(input, from: 6500, to: 5000), saturation: 1.06, contrast: 1.16, brightness: 0.0)
+    case "f160c":
+      return controls(temp(input, from: 6500, to: 7000), saturation: 1.10, contrast: 1.02, brightness: 0.03)
+    case "f400h":
+      return controls(temp(input, from: 6500, to: 7800), saturation: 0.90, contrast: 0.95, brightness: 0.10)
+    case "fc200":
+      return controls(temp(input, from: 6500, to: 5000), saturation: 1.05, contrast: 1.06, brightness: 0.04)
+    case "fcc":
+      return controls(input, saturation: 1.08, contrast: 1.10, brightness: 0.01)
+    case "classic_chrome":
+      return controls(input, saturation: 0.86, contrast: 1.12, brightness: 0.02)
+    case "classic_neg":
+      return controls(temp(input, from: 6500, to: 6800), saturation: 1.0, contrast: 1.08, brightness: 0.02)
+    case "pro_neg":
+      return controls(temp(input, from: 6500, to: 5400), saturation: 0.95, contrast: 0.98, brightness: 0.06)
+    case "provia":
+      return controls(input, saturation: 1.05, contrast: 1.06, brightness: 0.02)
+    case "velvia":
+      return controls(input, saturation: 1.25, contrast: 1.18, brightness: 0.0)
+    case "astia":
+      return controls(input, saturation: 1.08, contrast: 1.02, brightness: 0.04)
+    case "kodak_gold":
+      return controls(temp(input, from: 6500, to: 5000), saturation: 1.06, contrast: 1.02, brightness: 0.05)
+    case "portra160":
+      return controls(temp(input, from: 6500, to: 5400), saturation: 0.95, contrast: 0.96, brightness: 0.08)
+    case "portra400":
+      return controls(temp(input, from: 6500, to: 5400), saturation: 1.0, contrast: 1.0, brightness: 0.06)
+    case "ektar":
+      return controls(input, saturation: 1.15, contrast: 1.16, brightness: 0.0)
+    case "agfa_vista":
+      return controls(temp(input, from: 6500, to: 6500), saturation: 1.05, contrast: 1.06, brightness: 0.08)
     default:
-      return render(input)
+      return controls(input, saturation: 1.04, contrast: 1.04, brightness: 0.0)
     }
-    return render(output)
+  }
+
+  private func controls(
+    _ image: CIImage,
+    saturation: CGFloat,
+    contrast: CGFloat,
+    brightness: CGFloat
+  ) -> CIImage {
+    image.applyingFilter("CIColorControls", parameters: [
+      kCIInputSaturationKey: saturation,
+      kCIInputContrastKey: contrast,
+      kCIInputBrightnessKey: brightness,
+    ])
+  }
+
+  private func temp(_ image: CIImage, from: CGFloat, to: CGFloat) -> CIImage {
+    image.applyingFilter("CITemperatureAndTint", parameters: [
+      "inputNeutral": CIVector(x: from, y: 0),
+      "inputTargetNeutral": CIVector(x: to, y: 0),
+    ])
   }
 
   private func render(_ image: CIImage) -> Data? {
@@ -985,6 +1298,99 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     }
     let ui = UIImage(cgImage: cgImage, scale: 1, orientation: .up)
     return ui.jpegData(compressionQuality: 0.95)
+  }
+
+  private func pickPhotos(result: @escaping FlutterResult) {
+    guard let controller = PrimeCameraHost.topViewController() else {
+      result([])
+      return
+    }
+    var config = PHPickerConfiguration(photoLibrary: .shared())
+    config.filter = .images
+    config.selectionLimit = 0
+    config.preferredAssetRepresentationMode = .current
+    let picker = PHPickerViewController(configuration: config)
+    let delegate = PrimePhotoPicker { [weak self] paths in
+      self?.photoPicker = nil
+      result(paths)
+    }
+    photoPicker = delegate
+    picker.delegate = delegate
+    controller.present(picker, animated: true)
+  }
+
+  private func listPhotos(result: @escaping FlutterResult) {
+    let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("PRIME", isDirectory: true)
+    guard let files = try? FileManager.default.contentsOfDirectory(
+      at: dir,
+      includingPropertiesForKeys: [.contentModificationDateKey],
+      options: [.skipsHiddenFiles]
+    ) else {
+      result([])
+      return
+    }
+    let sorted = files
+      .filter { ["jpg", "jpeg", "png", "heic"].contains($0.pathExtension.lowercased()) }
+      .sorted {
+        let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        return a > b
+      }
+    result(sorted.map { $0.path })
+  }
+
+  private func deletePhoto(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard
+      let args = call.arguments as? [String: Any],
+      let path = args["path"] as? String
+    else {
+      result(false)
+      return
+    }
+    do {
+      try FileManager.default.removeItem(atPath: path)
+      result(true)
+    } catch {
+      result(false)
+    }
+  }
+
+  private func shareFiles(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard
+      let args = call.arguments as? [String: Any],
+      let paths = args["paths"] as? [String],
+      let controller = PrimeCameraHost.topViewController()
+    else {
+      result(false)
+      return
+    }
+    let urls = paths.filter { FileManager.default.fileExists(atPath: $0) }
+      .map { URL(fileURLWithPath: $0) }
+    guard !urls.isEmpty else {
+      result(false)
+      return
+    }
+    let activity = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+    if let popover = activity.popoverPresentationController {
+      popover.sourceView = controller.view
+      popover.sourceRect = CGRect(x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
+      popover.permittedArrowDirections = []
+    }
+    controller.present(activity, animated: true) { result(true) }
+  }
+
+  private func saveLivePhoto(data: Data, movieURL: URL) {
+    PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+      guard status == .authorized || status == .limited else { return }
+      PHPhotoLibrary.shared().performChanges {
+        let request = PHAssetCreationRequest.forAsset()
+        request.addResource(with: .photo, data: data, options: nil)
+        request.addResource(with: .pairedVideo, fileURL: movieURL, options: nil)
+      } completionHandler: { _, _ in
+        try? FileManager.default.removeItem(at: movieURL)
+      }
+    }
   }
 
   private func saveToAlbum(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -1077,4 +1483,87 @@ final class PrimePhotoDelegate: NSObject, AVCapturePhotoCaptureDelegate {
   ) {
     handler(photo, error)
   }
+}
+
+
+final class PrimePhotoPicker: NSObject, PHPickerViewControllerDelegate {
+  private let completion: ([String]) -> Void
+
+  init(completion: @escaping ([String]) -> Void) {
+    self.completion = completion
+  }
+
+  func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+    picker.dismiss(animated: true)
+    guard !results.isEmpty else {
+      completion([])
+      return
+    }
+    let group = DispatchGroup()
+    let lock = NSLock()
+    var paths: [String] = []
+    let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("PRIME", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+    for result in results {
+      guard result.itemProvider.canLoadObject(ofClass: UIImage.self) else { continue }
+      group.enter()
+      result.itemProvider.loadObject(ofClass: UIImage.self) { object, _ in
+        defer { group.leave() }
+        guard let image = object as? UIImage,
+              let data = image.jpegData(compressionQuality: 0.95) else { return }
+        let url = dir.appendingPathComponent("import-\(UUID().uuidString).jpg")
+        do {
+          try data.write(to: url, options: .atomic)
+          lock.lock()
+          paths.append(url.path)
+          lock.unlock()
+        } catch {}
+      }
+    }
+    group.notify(queue: .main) { [completion] in
+      completion(paths)
+    }
+  }
+}
+
+
+final class PrimeLivePhotoDelegate: NSObject, AVCapturePhotoCaptureDelegate {
+  private let handler: (Data?, URL?, Error?) -> Void
+
+  init(handler: @escaping (Data?, URL?, Error?) -> Void) {
+    self.handler = handler
+  }
+
+  func photoOutput(
+    _ output: AVCapturePhotoOutput,
+    didFinishProcessingPhoto photo: AVCapturePhoto,
+    error: Error?
+  ) {
+    // 数据在 didFinishCapture 统一回调，此处只保存引用。
+    self.photo = photo
+  }
+
+  func photoOutput(
+    _ output: AVCapturePhotoOutput,
+    didFinishProcessingLivePhotoToMovieFileAt movieFileURL: URL,
+    duration: CMTime,
+    photoDisplayTime: CMTime,
+    resolvedSettings: AVCaptureResolvedPhotoSettings,
+    error: Error?
+  ) {
+    self.movieURL = movieFileURL
+  }
+
+  func photoOutput(
+    _ output: AVCapturePhotoOutput,
+    didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
+    error: Error?
+  ) {
+    handler(photo?.fileDataRepresentation(), movieURL, error)
+  }
+
+  private var photo: AVCapturePhoto?
+  private var movieURL: URL?
 }

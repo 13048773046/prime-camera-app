@@ -1,15 +1,18 @@
 # 定焦 PRIME
 
-AI 构图相机 App 的前后端工程。当前版本已接入 iOS 原生相机内核、Doka 式 3:4 取景与 AR 构图、相册/我的页，以及一个按 Doka `ai_camera/v2` 反推的 FastAPI scan 服务。AI 人格为“林晓莹”，头像使用日系动漫风格素材。
+AI 构图相机 App 的前后端工程。v0.4.0 在 Doka 1.3.20 全量反编译（185 layout / 415 业务 Java）基础上，补齐了 24 款胶片滤镜、完整设置页、实况照片/对焦/曝光/水平仪/主体锁定、相册日期分组与多选删除/导入、照片编辑（裁切/旋转/翻转/边框/水印）、账号与 Pro/兑换页面，以及一组与 Doka `ApiService` 同构的账号、VIP、支付、配置后端接口。AI 人格为“流小萤”，头像使用用户提供的日系动漫素材。
+
+完整迁移矩阵见 `analysis/doka/FULL_FEATURE_MAP.md`；接口逆推见 `backend/DOKA_INFERENCE.md`。
 
 ## 目录
 
 ```
 lib/
   main.dart          App 入口与主题
-  pages/             相机引导页、出片页
+  pages/             相机、设置、相册、编辑、成片、我的
+  data/filters.dart  Doka 胶片滤镜库（24 款 + 分类 + Pro 标记）
   widgets/           AR 目标环
-  services/          构图接口客户端
+  services/          相机原生通道、scan、设置、照片归档
 backend/
   app/
     main.py          FastAPI 入口与路由
@@ -18,8 +21,10 @@ backend/
     geometry.py      端侧几何规则与图片解码
     ai_client.py     DeepSeek 文本口令适配与 JSON 归一化
     doka.py          Doka 式 scan 几何/模板生成
-    persona.py       林晓莹人设与本地文案
+    persona.py       流小萤人设与本地文案
     rate_limit.py    深度指挥计次与去重
+    store.py         SQLite 用户/验证码/VIP/订单
+    api_doka.py      Doka auth / vip / pay / config 同构接口
   tests/             pytest 接口测试
 ```
 
@@ -69,13 +74,27 @@ flutter build ios --release --no-codesign
 
 返回服务状态与 AI 密钥是否已配置。
 
+### POST /ai_camera/v2
+
+Doka `POST ai_camera/v2` 的同构入口；字段与 `/v1/scan` 完全一致，复用同一套几何/模板/文案逻辑。
+
+### 账号 / VIP / 配置
+
+- `POST /ai_camera/auth/get_code`、`login`、`me`、`bind_phone`、`bind_wechat`、`unbind_wechat`、`delete_account`
+- `GET /ai_camera/vip/products`、`vip/status`
+- `POST /ai_camera/pay/create_order`、`GET /pay/order_status`
+- `POST /api/v1/redeem_vip_code`
+- `POST /app/config_doka`、`/app/version_doka_android`、`/app/security/report`
+
+登录验证码默认走本地联调：`PRIME_DEV_AUTH=1` 时 `get_code` 会在响应里返回 `dev_code`，生产环境置 0 并接短信通道。支付未接入真实商户，`pay/mock_confirm` 只在本地联调模式可用，不会伪造线上支付成功。
+
 ### POST /v1/scan
 
 Doka `ai_camera/v2` 同构的 multipart 接口，返回 `{code,message,data}`，其中 `data` 为 `CameraData`（含 `SubAreaRectNorm`、`PredictSubAreaPicURL`、`ComposeReason` 等）。详见 `backend/DOKA_INFERENCE.md`。
 
 ### POST /v1/persona/line
 
-用林晓莹的口吻把结构化构图 brief 变成一句可执行口令；配置 `AI_API_KEY` 时走 DeepSeek `deepseek-chat`，否则本地文案。
+用流小萤的口吻把结构化构图 brief 变成一句可执行口令；配置 `AI_API_KEY` 时走 DeepSeek `deepseek-chat`，否则本地文案。
 
 ### POST /v1/compose
 

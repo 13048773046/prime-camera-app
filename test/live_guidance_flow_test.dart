@@ -39,8 +39,8 @@ void main() {
       ),
     );
     await tester.pump(const Duration(milliseconds: 300));
-    // 默认是通用场景，先显示林晓莹的开场提示。
-    expect(find.text('你好，我是林晓莹'), findsOneWidget);
+    // 默认是通用场景，先显示流小萤的开场提示。
+    expect(find.text('你好，我是流小萤'), findsOneWidget);
     expect(find.text('正在看你的画面和光线'), findsOneWidget);
 
     await tester.pump(const Duration(milliseconds: 2000));
@@ -89,7 +89,7 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('晓莹建议'), findsOneWidget);
+    expect(find.text('小萤建议'), findsOneWidget);
     expect(find.textContaining('手机往左带'), findsOneWidget);
     expect(find.text('构图已锁定'), findsNothing);
   });
