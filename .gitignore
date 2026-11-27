@@ -31,3 +31,5 @@ dist_native/
 analysis/*.png
 analysis/ref_*
 analysis/doka/detail.js
+analysis/doka/*.zip
+analysis/doka/doka_decompile_pack/
