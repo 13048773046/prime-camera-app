@@ -173,7 +173,7 @@ class _SettingsPageState extends State<SettingsPage> {
             _divider(),
             _navRow(
               'AI 滤镜偏好',
-              '选择常拍场景与偏好胶片，扫描时优先推荐',
+              "${_prefs.preferredScenes.join('、')} · ${_prefs.preferredSeries.join('、')}",
               () => _openFilterPrefs(context),
             ),
             _divider(),
@@ -219,7 +219,7 @@ class _SettingsPageState extends State<SettingsPage> {
             _divider(),
             _navRow('帮助与反馈', '邮件、抖音、小红书三个入口', () => _feedback(context)),
             _divider(),
-            _navRow('关于 PRIME', '版本 0.4.3 · 隐私政策 · 开源许可', () => _about(context)),
+            _navRow('关于 PRIME', '版本 0.4.4 · 隐私政策 · 开源许可', () => _about(context)),
           ]),
 
           _section('高级'),
@@ -244,7 +244,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 18),
           const Center(
             child: Text(
-              'PRIME 0.4.3 · 设置会立即生效',
+              'PRIME 0.4.4 · 设置会立即生效',
               style: TextStyle(fontSize: 10, color: PrimeColor.white24),
             ),
           ),
@@ -364,7 +364,16 @@ class _SettingsPageState extends State<SettingsPage> {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (sheet) => const _FilterPrefsSheet(),
+      builder: (sheet) => _FilterPrefsSheet(
+        initialScenes: _prefs.preferredScenes,
+        initialSeries: _prefs.preferredSeries,
+        onSave: (scenes, series) {
+          setState(() {
+            _prefs.preferredScenes = scenes;
+            _prefs.preferredSeries = series;
+          });
+        },
+      ),
     );
   }
 
@@ -411,7 +420,7 @@ class _SettingsPageState extends State<SettingsPage> {
         backgroundColor: PrimeColor.surfaceLift,
         title: const Text('关于 PRIME', style: TextStyle(color: PrimeColor.white, fontSize: 16)),
         content: const Text(
-          'PRIME 0.4.3\n把手机当成一台有摄影指导的相机。\n\nDoka 1.3.20 前端逻辑研究项目；PRIME 使用自有品牌与素材。',
+          'PRIME 0.4.4\n把手机当成一台有摄影指导的相机。\n\nDoka 1.3.20 前端逻辑研究项目；PRIME 使用自有品牌与素材。',
           style: TextStyle(color: PrimeColor.white54, fontSize: 12, height: 1.7),
         ),
         actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭'))],
@@ -556,15 +565,23 @@ class _SimpleListSheet extends StatelessWidget {
 }
 
 class _FilterPrefsSheet extends StatefulWidget {
-  const _FilterPrefsSheet();
+  const _FilterPrefsSheet({
+    required this.initialScenes,
+    required this.initialSeries,
+    required this.onSave,
+  });
+
+  final List<String> initialScenes;
+  final List<String> initialSeries;
+  final void Function(List<String> scenes, List<String> series) onSave;
 
   @override
   State<_FilterPrefsSheet> createState() => _FilterPrefsSheetState();
 }
 
 class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
-  final Set<String> _scenes = {'人像'};
-  final Set<String> _series = {'Doka'};
+  late final Set<String> _scenes = {...widget.initialScenes};
+  late final Set<String> _series = {...widget.initialSeries};
 
   @override
   Widget build(BuildContext context) {
@@ -623,7 +640,10 @@ class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
               SizedBox(
                 width: double.infinity,
                 child: FilledButton(
-                  onPressed: () => Navigator.of(context).pop(),
+                  onPressed: () {
+                    widget.onSave(_scenes.toList(), _series.toList());
+                    Navigator.of(context).pop();
+                  },
                   style: FilledButton.styleFrom(backgroundColor: PrimeColor.white, foregroundColor: PrimeColor.black),
                   child: const Text('保存偏好'),
                 ),

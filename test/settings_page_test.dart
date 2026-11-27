@@ -24,6 +24,28 @@ void main() {
     }
   });
 
+  testWidgets('AI 滤镜偏好可保存到设置', (tester) async {
+    CameraPrefs.instance.reset();
+    await tester.pumpWidget(
+      MaterialApp(theme: PrimeTheme.build(), home: const SettingsPage()),
+    );
+    await tester.pumpAndSettle();
+    await tester.dragUntilVisible(
+      find.text('AI 滤镜偏好'),
+      find.byType(ListView),
+      const Offset(0, -220),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('AI 滤镜偏好'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('街拍'));
+    await tester.pump();
+    await tester.tap(find.text('保存偏好'));
+    await tester.pumpAndSettle();
+    expect(CameraPrefs.instance.preferredScenes, contains('街拍'));
+    expect(find.textContaining('街拍'), findsOneWidget);
+  });
+
   testWidgets('使用引导页 5 步完整', (tester) async {
     await tester.pumpWidget(
       MaterialApp(theme: PrimeTheme.build(), home: const GuidePage()),

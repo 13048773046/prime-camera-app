@@ -29,6 +29,8 @@ class CameraPrefs {
   String? accountPhone;
   String? authToken;
   String? userName;
+  List<String> preferredScenes = ['人像'];
+  List<String> preferredSeries = ['Doka'];
 
   bool get isPro => proUntil != null && proUntil!.isAfter(DateTime.now());
 
@@ -59,5 +61,7 @@ class CameraPrefs {
     accountPhone = null;
     authToken = null;
     userName = null;
+    preferredScenes = ['人像'];
+    preferredSeries = ['Doka'];
   }
 }

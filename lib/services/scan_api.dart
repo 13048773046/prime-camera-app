@@ -87,6 +87,7 @@ class ScanApi {
     required double roll,
     List<double>? subjectBox,
     String subjectKind = 'person',
+    String aiFilterPreferences = '',
   }) async {
     if (!enabled) return null;
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/+$'), '')}/ai_camera/v2');
@@ -99,7 +100,7 @@ class ScanApi {
       ..fields['timestamp'] = DateTime.now().millisecondsSinceEpoch.toString()
       ..fields['comp_scene'] = scene
       ..fields['recommend_mode'] = 'auto'
-      ..fields['ai_filter_preferences'] = ''
+      ..fields['ai_filter_preferences'] = aiFilterPreferences
       ..fields['language'] = 'zh'
       ..fields['region'] = 'CN'
       ..fields['distribution'] = 'store'

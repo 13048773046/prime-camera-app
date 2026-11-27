@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
@@ -479,6 +480,10 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         roll: _lastRoll,
         subjectBox: _lockedSubjectBox ?? _guide?.subjectBox,
         subjectKind: _scene == SceneMode.portrait ? 'person' : 'object',
+        aiFilterPreferences: jsonEncode({
+          'scenes': CameraPrefs.instance.preferredScenes,
+          'series': CameraPrefs.instance.preferredSeries,
+        }),
       );
       if (!mounted || plan == null) return;
       final rect = plan.cropRect;
