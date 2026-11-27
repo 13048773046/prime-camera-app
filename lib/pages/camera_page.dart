@@ -35,7 +35,7 @@ extension CaptureRatioX on CaptureRatio {
   double get heightOverWidth => switch (this) {
     CaptureRatio.threeFour => 4 / 3,
     CaptureRatio.oneOne => 1,
-    CaptureRatio.sixteenNine => 16 / 9,
+    CaptureRatio.sixteenNine => 9 / 16,
   };
 }
 
