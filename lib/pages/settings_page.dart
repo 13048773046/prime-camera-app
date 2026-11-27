@@ -219,7 +219,7 @@ class _SettingsPageState extends State<SettingsPage> {
             _divider(),
             _navRow('帮助与反馈', '邮件、抖音、小红书三个入口', () => _feedback(context)),
             _divider(),
-            _navRow('关于 PRIME', '版本 0.4.1 · 隐私政策 · 开源许可', () => _about(context)),
+            _navRow('关于 PRIME', '版本 0.4.2 · 隐私政策 · 开源许可', () => _about(context)),
           ]),
 
           _section('高级'),
@@ -244,7 +244,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 18),
           const Center(
             child: Text(
-              'PRIME 0.4.1 · 设置会立即生效',
+              'PRIME 0.4.2 · 设置会立即生效',
               style: TextStyle(fontSize: 10, color: PrimeColor.white24),
             ),
           ),
@@ -411,7 +411,7 @@ class _SettingsPageState extends State<SettingsPage> {
         backgroundColor: PrimeColor.surfaceLift,
         title: const Text('关于 PRIME', style: TextStyle(color: PrimeColor.white, fontSize: 16)),
         content: const Text(
-          'PRIME 0.4.1\n把手机当成一台有摄影指导的相机。\n\nDoka 1.3.20 前端逻辑研究项目；PRIME 使用自有品牌与素材。',
+          'PRIME 0.4.2\n把手机当成一台有摄影指导的相机。\n\nDoka 1.3.20 前端逻辑研究项目；PRIME 使用自有品牌与素材。',
           style: TextStyle(color: PrimeColor.white54, fontSize: 12, height: 1.7),
         ),
         actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭'))],

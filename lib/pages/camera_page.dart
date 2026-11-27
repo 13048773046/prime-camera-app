@@ -1133,9 +1133,19 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       child: Row(
         children: [
           _glassTopButton(
-            Icons.visibility_off_outlined,
-            _startAi,
-            tooltip: '重新识别主体',
+            CameraPrefs.instance.livePhoto
+                ? Icons.motion_photos_on
+                : Icons.motion_photos_off,
+            () {
+              setState(() => CameraPrefs.instance.livePhoto = !CameraPrefs.instance.livePhoto);
+              _showPrompt(
+                CameraPrefs.instance.livePhoto ? '实况照片已开启' : '实况照片已关闭',
+                CameraPrefs.instance.livePhoto ? '快门前会同时录制 1.5 秒动态' : '下一张只保存静态照片',
+                1800,
+              );
+            },
+            tooltip: '实况照片',
+            active: CameraPrefs.instance.livePhoto,
           ),
           const Spacer(),
           _glassTopButton(
@@ -1148,7 +1158,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _glassTopButton(IconData icon, VoidCallback onTap, {String? tooltip}) {
+  Widget _glassTopButton(IconData icon, VoidCallback onTap, {String? tooltip, bool active = false}) {
     final button = GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
@@ -1157,7 +1167,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         height: 40,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: Colors.black.withValues(alpha: 0.10),
+          color: active
+              ? PrimeColor.white24
+              : Colors.black.withValues(alpha: 0.10),
           border: Border.all(color: PrimeColor.white12, width: 0.8),
         ),
         alignment: Alignment.center,
