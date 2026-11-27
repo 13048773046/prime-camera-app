@@ -11,6 +11,7 @@ import '../services/guidance.dart';
 import '../theme.dart';
 import '../widgets/guide_ring.dart';
 import 'gallery_page.dart';
+import 'mine_page.dart';
 import 'result_page.dart';
 
 class CameraPage extends StatefulWidget {
@@ -880,7 +881,26 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       MaterialPageRoute<void>(
         builder: (_) => GalleryPage(
           photos: List<String>.of(_recentPhotos),
-          onMine: _openSettings,
+          onMine: _openMine,
+        ),
+      ),
+    );
+  }
+
+  void _openMine() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => MinePage(
+          photoCount: _recentPhotos.length,
+          gridOn: _gridOn,
+          flashOn: _flashOn,
+          onGrid: (value) => setState(() => _gridOn = value),
+          onFlash: (value) => setState(() => _flashOn = value),
+          onGallery: () {
+            Navigator.of(context).pop();
+            _openGallery();
+          },
+          onCamera: () => Navigator.of(context).pop(),
         ),
       ),
     );
@@ -1806,7 +1826,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
           children: [
             Expanded(child: _tabItem('相机', active: true)),
             Expanded(child: _tabItem('相册', onTap: _openGallery)),
-            Expanded(child: _tabItem('我的', onTap: _openSettings)),
+            Expanded(child: _tabItem('我的', onTap: _openMine)),
           ],
         ),
       ),
@@ -2907,7 +2927,7 @@ class _SettingsSheet extends StatelessWidget {
               _toggleRow('构图网格', gridOn, onGrid),
               _toggleRow('闪光灯', flashOn, onFlash),
               _row('保存水印', '开启'),
-              _row('版本', '0.3.0'),
+              _row('版本', '0.3.1'),
             ],
           ),
         ),
