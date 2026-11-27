@@ -62,7 +62,7 @@ curl -F 'file=@frame.jpg' \
 
 ```bash
 flutter build ios --release --no-codesign \
-  --dart-define=PRIME_API_BASE=https://your-domain.example
+  --dart-define=PRIME_API_BASE=https://uosar.yosar.cloud
 ```
 
 不指定时 IPA 仍可完整使用，构图由端侧 Vision + 本地规则驱动。

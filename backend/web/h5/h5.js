@@ -357,7 +357,7 @@
         const dev = body.data && body.data.dev_code;
         $('loginHint').textContent = dev ? `开发验证码：${dev}` : '验证码已发送，请查看短信';
       } else $('loginHint').textContent = body.message || '发送失败';
-    } catch (_) { $('loginHint').textContent = '服务未连通，可输入本地体验码 123456'; }
+    } catch (_) { $('loginHint').textContent = '服务未连通；离线预览可输入 123456'; }
   }
   async function doLogin() {
     const phone = $('loginPhone').value.trim();
@@ -380,7 +380,7 @@
       if (code === '123456') {
         state.token = '';
         setProfile({ is_login: true, username: `本地 ${phone.slice(-4)}`, phone_num: phone, is_vip: false, remaining_free_count: 5 });
-        closeSheets(); showToast('本地体验登录');
+        closeSheets(); showToast('离线预览登录 · 不同步 Pro');
       } else {
         $('loginHint').textContent = err.message || '登录失败';
       }
