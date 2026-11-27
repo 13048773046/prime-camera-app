@@ -362,8 +362,8 @@ async def doka_config():
 async def doka_version():
     return ok(
         {
-            "versionCode": store.get_setting("app_version", "0.4.4").replace(".", ""),
-            "versionName": store.get_setting("app_version", "0.4.4"),
+            "versionCode": store.get_setting("app_version", "0.4.5").replace(".", "").lstrip("0") or "0",
+            "versionName": store.get_setting("app_version", "0.4.5"),
             "updateType": "none" if not store.get_setting("download_url", "") else "force",
             "updateDesc": store.get_setting("announcement", ""),
             "appAddress": store.get_setting("download_url", ""),

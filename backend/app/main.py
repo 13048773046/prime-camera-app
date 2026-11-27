@@ -95,7 +95,7 @@ async def health() -> HealthResponse:
         ok=True,
         service=settings.app_name,
         ai_configured=bool(settings.ai_api_key),
-        version=store.get_setting("app_version", "0.4.4"),
+        version=store.get_setting("app_version", "0.4.5"),
     )
 
 
