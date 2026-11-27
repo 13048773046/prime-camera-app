@@ -15,11 +15,16 @@ class GuideOverlay extends StatefulWidget {
     this.showGrid = false,
     this.confidence = 0.62,
     this.frameRect,
+    this.alignedBox,
     this.subjectLabel = '主体',
   });
 
   final List<double> subjectBox;
   final List<double> targetBox;
+
+  /// 服务端 scan 返回的 `SubAreaRectNorm`。对齐后用它画渐变裁切框，
+  /// 对应 Doka 的 AI 构图方案；没有服务端方案时退回 targetBox。
+  final List<double>? alignedBox;
   final bool aligned;
   final bool analyzing;
   final bool showGrid;
@@ -64,6 +69,7 @@ class _GuideOverlayState extends State<GuideOverlay>
                 scan: _scan.value,
                 confidence: widget.confidence,
                 frameRect: widget.frameRect,
+                alignedBox: widget.alignedBox,
                 subjectLabel: widget.subjectLabel,
               ),
             );
@@ -84,6 +90,7 @@ class _GuidePainter extends CustomPainter {
     required this.scan,
     required this.confidence,
     required this.frameRect,
+    required this.alignedBox,
     required this.subjectLabel,
   });
 
@@ -95,6 +102,7 @@ class _GuidePainter extends CustomPainter {
   final double scan;
   final double confidence;
   final Rect? frameRect;
+  final List<double>? alignedBox;
   final String subjectLabel;
 
   static const List<Offset> _sparkleSpots = [
@@ -134,12 +142,15 @@ class _GuidePainter extends CustomPainter {
     if (aligned) {
       final source = frameRect ?? (Offset.zero & size);
       Rect? target;
-      if (targetBox.length == 4) {
+      final box = (alignedBox != null && alignedBox!.length == 4)
+          ? alignedBox!
+          : targetBox;
+      if (box.length == 4) {
         target = Rect.fromLTWH(
-          source.left + targetBox[0] * source.width,
-          source.top + targetBox[1] * source.height,
-          targetBox[2] * source.width,
-          targetBox[3] * source.height,
+          source.left + box[0] * source.width,
+          source.top + box[1] * source.height,
+          box[2] * source.width,
+          box[3] * source.height,
         );
       }
       _paintAlignedFrame(

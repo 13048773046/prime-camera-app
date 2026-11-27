@@ -42,3 +42,58 @@ class HealthResponse(BaseModel):
     service: str
     ai_configured: bool
     version: str = "0.1.0"
+
+
+class SubAreaRectModel(BaseModel):
+    X: float = 0.0
+    Y: float = 0.0
+    W: float = 1.0
+    H: float = 1.0
+
+
+class CameraFilterModel(BaseModel):
+    FilterName: str = ""
+    Reason: str = ""
+
+
+FilterModel = CameraFilterModel
+
+
+class ScanData(BaseModel):
+    # Doka `CameraData` uses PascalCase JSON keys. Keep them verbatim so the
+    # reverse-engineered contract stays recognizable.
+    ExifFocalLength: str = "26"
+    BodyRange: str = "medium"
+    PredictSubAreaPicURL: str = ""
+    PicWithPredictAreaLine: str = ""
+    SubAreaSize: str = "medium"
+    LeftTopCrd: list[int] = Field(default_factory=lambda: [0, 0])
+    RightDownCrd: list[int] = Field(default_factory=lambda: [0, 0])
+    ComposeReason: str = ""
+    AiCameraFilter: FilterModel | None = None
+    AiCameraFilters: list[CameraFilterModel] = Field(default_factory=list)
+    SubAreaRectNorm: SubAreaRectModel = Field(default_factory=SubAreaRectModel)
+
+
+class ScanEnvelope(BaseModel):
+    code: int = 0
+    message: str = "ok"
+    data: ScanData
+
+
+class PersonaRequest(BaseModel):
+    scene: str = "portrait"
+    subject_kind: str = "person"
+    subject_height: float = 0.6
+    target_height: float = 0.62
+    distance: float | None = None
+    tilt: float = 0.0
+    roll: float = 0.0
+    mode: str = "portrait"
+
+
+class PersonaResponse(BaseModel):
+    name: str = "林晓莹"
+    role: str = "构图导演"
+    line: str
+    source: Literal["local", "model"] = "local"

@@ -24,8 +24,8 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.text('稳住手机'), findsOneWidget);
-    expect(find.text('正在识别主体与场景'), findsOneWidget);
+    expect(find.text('你好，我是林晓莹'), findsOneWidget);
+    expect(find.text('正在看你的画面和光线'), findsOneWidget);
     expect(find.byKey(const ValueKey('shutter')), findsOneWidget);
 
     // 宽度必须铺满 390，高度按 3:4 限制在 520；不是 9:16 全屏。
@@ -34,7 +34,7 @@ void main() {
 
     // 2–3 秒后分析提示自动收走，只留下取景和构图入口。
     await tester.pump(const Duration(milliseconds: 2300));
-    expect(find.text('稳住手机'), findsNothing);
+    expect(find.text('你好，我是林晓莹'), findsNothing);
     expect(find.text('切换构图方案'), findsOneWidget);
     expect(find.byKey(const ValueKey('ratio-button')), findsOneWidget);
 
@@ -42,7 +42,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('plan-button')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
-    expect(find.text('PRIME 的 3 种拍法'), findsOneWidget);
+    expect(find.text('晓莹的 3 种拍法'), findsOneWidget);
 
     await tester.tap(find.text('2  七分身'));
     await tester.pump(const Duration(milliseconds: 500));

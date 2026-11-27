@@ -70,3 +70,39 @@ def test_dedup_same_request():
     second = client.post("/v1/compose", headers={"X-Device-Id": "test-device-3"}, json=payload)
     assert first.status_code == 200
     assert second.status_code == 200
+
+
+def test_scan_returns_doka_camera_data():
+    img = Image.new("RGB", (900, 1200), color=(232, 220, 205))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=70)
+    files = {"file": ("frame.jpg", buf.getvalue(), "image/jpeg")}
+    data = {
+        "shoot_type": "portrait",
+        "direction": "portrait",
+        "comp_scene": "portrait",
+        "subject_box": "[0.34,0.18,0.28,0.56]",
+        "subject_kind": "person",
+        "zoom": "1.0",
+        "timestamp": "1700",
+    }
+    resp = client.post("/v1/scan", files=files, data=data)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    d = body["data"]
+    assert d["PredictSubAreaPicURL"].endswith(".jpg")
+    assert d["SubAreaRectNorm"]["W"] > 0
+    assert d["ComposeReason"]
+
+
+def test_persona_falls_back_to_local_line():
+    resp = client.post(
+        "/v1/persona/line",
+        json={"scene": "portrait", "distance": 1.7, "subject_height": 0.55},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "林晓莹"
+    assert body["line"]
+    assert body["source"] in {"local", "model"}

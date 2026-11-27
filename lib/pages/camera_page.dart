@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../services/camera_service.dart';
 import '../services/compose_api.dart';
+import '../services/scan_api.dart';
 import '../services/guidance.dart';
 import '../theme.dart';
 import '../widgets/guide_ring.dart';
@@ -228,6 +229,13 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   StreamSubscription<GuidanceFrame>? _guidanceSub;
   StreamSubscription<CameraFrameTick>? _frameSub;
   final LiveComposer _composer = const LiveComposer();
+  final ScanApi _scanApi = ScanApi();
+  Timer? _scanTimer;
+  bool _scanInFlight = false;
+  List<double>? _serverCrop;
+  String _lastServerReason = '';
+  double _lastRoll = 0;
+  double _lastPitch = 0;
   bool _live = false;
   bool _analyzing = false;
   bool _restarting = false;
@@ -369,6 +377,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     _frameWatchdog?.cancel();
     _guidanceSub?.cancel();
     _frameSub?.cancel();
+    _scanTimer?.cancel();
     _promptTimer?.cancel();
     _distanceTimer?.cancel();
     super.dispose();
@@ -443,11 +452,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _alignProgress = 0.12;
       _lastActionLabel = null;
     });
-    _showPrompt('稳住手机', '正在识别主体与场景', 2400);
+    _showPrompt('你好，我是林晓莹', '正在看你的画面和光线', 2400);
     _analyzeTimer = Timer(const Duration(milliseconds: 1800), () {
       if (!mounted) return;
       setState(() => _analyzing = false);
-      _showPrompt('识别完成', '选择构图方案，再把主体对准环', 2000);
+      _showPrompt('看好了', '选一个拍法，我带你对准主体', 2000);
       _startCommandCycle();
     });
   }
@@ -508,12 +517,15 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     _resetDistanceCard();
     _guidanceSub?.cancel();
     _frameSub?.cancel();
+    _scanTimer?.cancel();
     _frameWatchdog?.cancel();
     _alignTimer?.cancel();
     _analyzeTimer?.cancel();
     _lastGuidanceTs = 0;
     _lastFrameTs = 0;
     _restartAttempts = 0;
+    _serverCrop = null;
+    _scanInFlight = false;
     _wasAligned = false;
     setState(() {
       _composeEnabled = true;
@@ -523,7 +535,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _alignProgress = 0.12;
       _lastActionLabel = null;
     });
-    _showPrompt('稳住手机', '正在识别主体与场景', 2500);
+    _showPrompt('你好，我是林晓莹', '正在看你的画面和光线', 2500);
+    _startScanLoop();
     _guidanceSub = _camera.guidanceStream.listen(_onGuidanceFrame);
     _frameSub = _camera.frameStream.listen((tick) {
       _lastFrameTs = tick.ts;
@@ -534,9 +547,50 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() => _analyzing = false);
       if (_guide == null || !_isAlignedGuide(_guide!)) {
-        _showPrompt('识别完成', '选择构图方案，再把主体对准环', 2000);
+        _showPrompt('看好了', '选一个拍法，我带你对准主体', 2000);
       }
     });
+  }
+
+  /// Doka 是“客户端抓帧 → 服务端 scan 给方案 → 客户端跟踪”。
+  /// 这里保留同样的时序，但只有配置了 PRIME_API_BASE 才发请求；
+  /// 没有后端时端侧 Vision 仍然独立工作，不会出现空转或卡顿。
+  void _startScanLoop() {
+    _scanTimer?.cancel();
+    _serverCrop = null;
+    _lastServerReason = '';
+    if (!_scanApi.enabled) return;
+    _scanTimer = Timer.periodic(const Duration(milliseconds: 1600), (_) {
+      _scanCurrentFrame();
+    });
+  }
+
+  Future<void> _scanCurrentFrame() async {
+    if (!mounted || !_live || !_composeEnabled || _scanInFlight) return;
+    _scanInFlight = true;
+    try {
+      final jpeg = await _camera.capturePreviewJpeg();
+      if (!mounted || jpeg == null) return;
+      final plan = await _scanApi.scan(
+        jpeg: jpeg,
+        scene: _scene.name,
+        zoom: _zoomValues[_zoomIndex],
+        tilt: _lastPitch,
+        roll: _lastRoll,
+        subjectBox: _guide?.subjectBox,
+        subjectKind: _scene == SceneMode.portrait ? 'person' : 'object',
+      );
+      if (!mounted || plan == null) return;
+      final rect = plan.cropRect;
+      if (rect.length != 4 || rect[2] <= 0 || rect[3] <= 0) return;
+      setState(() => _serverCrop = rect);
+      if (!_aligned && plan.reason.isNotEmpty && plan.reason != _lastServerReason) {
+        _lastServerReason = plan.reason;
+        _showPrompt('晓莹看过画面', plan.reason, 1900);
+      }
+    } finally {
+      _scanInFlight = false;
+    }
   }
 
   /// 取景纹理停住时，页面看不出任何“移动手机”的反馈。这里用心跳
@@ -562,6 +616,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   void _onGuidanceFrame(GuidanceFrame frame) {
     if (!mounted || !_live || !_composeEnabled) return;
     _lastFrameTs = math.max(_lastFrameTs, frame.ts);
+    _lastRoll = frame.roll;
+    _lastPitch = frame.pitch;
     // UI 最高 4fps 更新，避免识别帧率带着整页抖动。
     if (frame.ts - _lastGuidanceTs < 240) return;
     _lastGuidanceTs = frame.ts;
@@ -602,7 +658,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     } else if (!_analyzing &&
         guide.confidence > 0 &&
         guide.actionLabel != _lastActionLabel) {
-      _showPrompt('构图建议', guide.hint, 1700);
+      _showPrompt('晓莹建议', guide.hint, 1700);
     }
     _lastActionLabel = guide.actionLabel;
     _wasAligned = newlyAligned;
@@ -934,7 +990,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         plans: _currentPlans,
         selectedIndex: _zoomIndex,
         sceneTitle: switch (_scene) {
-          SceneMode.portrait => 'PRIME 的 3 种拍法',
+          SceneMode.portrait => '晓莹的 3 种拍法',
           SceneMode.street => '街道的 3 种拍法',
           SceneMode.landscape => '风景的 3 种拍法',
           SceneMode.still => '静物的 3 种拍法',
@@ -1210,6 +1266,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 analyzing: _analyzing,
                 showGrid: _gridOn,
                 frameRect: previewRect,
+                alignedBox: _serverCrop,
                 subjectLabel: _subjectLabel == '主体'
                     ? '拍照主体'
                     : '拍照主体 · $_subjectLabel',
@@ -1772,7 +1829,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                     fit: StackFit.expand,
                     children: [
                       Image.asset(
-                        'assets/ai/photographer_256.png',
+                        'assets/ai/xiaoying_face.png',
                         fit: BoxFit.cover,
                         errorBuilder: (_, _, _) =>
                             const ColoredBox(color: Color(0xFF17171A)),
@@ -1782,7 +1839,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                         right: 0,
                         bottom: 5,
                         child: Text(
-                          'PRIME AI',
+                          '林晓莹',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 7.5,
@@ -2004,7 +2061,7 @@ class _DistanceCard extends StatelessWidget {
     if (_distance > _recommended + 0.75) {
       return '约 ${_distance.toStringAsFixed(1)} 米 · 再靠近，人物会更突出';
     }
-    return '约 ${_distance.toStringAsFixed(1)} 米 · 可继续后退，人物会更完整';
+    return '约 ${_distance.toStringAsFixed(1)} 米 · 位置刚好，按开始构图锁定';
   }
 
   bool get _good => _isPortrait && (_distance - _recommended).abs() <= 0.65;
@@ -2046,13 +2103,13 @@ class _DistanceCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'PRIME AI',
+                          '林晓莹 · 构图导演',
                           style: TextStyle(
-                            fontSize: 12,
+                            fontSize: 11,
                             height: 1,
                             color: PrimeColor.white54,
                             fontWeight: FontWeight.w600,
-                            letterSpacing: 1.2,
+                            letterSpacing: 0.8,
                           ),
                         ),
                         const SizedBox(height: 5),
@@ -2254,7 +2311,7 @@ class _AiAvatar extends StatelessWidget {
       ),
       child: ClipOval(
         child: Image.asset(
-          'assets/ai/photographer_256.png',
+          'assets/ai/xiaoying_face.png',
           width: size - 4,
           height: size - 4,
           fit: BoxFit.cover,
@@ -2927,7 +2984,7 @@ class _SettingsSheet extends StatelessWidget {
               _toggleRow('构图网格', gridOn, onGrid),
               _toggleRow('闪光灯', flashOn, onFlash),
               _row('保存水印', '开启'),
-              _row('版本', '0.3.1'),
+              _row('版本', '0.3.2'),
             ],
           ),
         ),

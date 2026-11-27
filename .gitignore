@@ -33,3 +33,6 @@ analysis/ref_*
 analysis/doka/detail.js
 analysis/doka/*.zip
 analysis/doka/doka_decompile_pack/
+
+# Generated scan templates
+backend/static/templates/*.jpg

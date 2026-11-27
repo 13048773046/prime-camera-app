@@ -220,6 +220,23 @@ class CameraService {
     }
   }
 
+  /// 抓一帧当前取景 JPEG，用于服务端 scan。只在真机原生内核可用；
+  /// Web/单元测试返回 null，页面继续走端侧 Vision，不阻塞取景。
+  Future<Uint8List?> capturePreviewJpeg() async {
+    if (_forceDemo) return null;
+    try {
+      final bytes = await _channel.invokeMethod<Uint8List>(
+        'capturePreviewJpeg',
+      );
+      if (bytes == null || bytes.isEmpty) return null;
+      return bytes;
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   Future<bool> saveToAlbum(String? path, {String? bytes}) async {
     try {
       final ok = await _channel.invokeMethod<bool>('saveToAlbum', {

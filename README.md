@@ -1,6 +1,6 @@
 # 定焦 PRIME
 
-AI 构图相机 App 的前后端工程。当前已落地 Flutter 前端壳、相机引导页、AR 目标环、口令流、出片页，以及 FastAPI 构图服务；iOS 原生相机内核将在真机环境继续接入。
+AI 构图相机 App 的前后端工程。当前版本已接入 iOS 原生相机内核、Doka 式 3:4 取景与 AR 构图、相册/我的页，以及一个按 Doka `ai_camera/v2` 反推的 FastAPI scan 服务。AI 人格为“林晓莹”，头像使用日系动漫风格素材。
 
 ## 目录
 
@@ -16,7 +16,9 @@ backend/
     config.py        环境变量配置
     schemas.py       请求响应模型
     geometry.py      端侧几何规则与图片解码
-    ai_client.py     视觉模型适配与 JSON 归一化
+    ai_client.py     DeepSeek 文本口令适配与 JSON 归一化
+    doka.py          Doka 式 scan 几何/模板生成
+    persona.py       林晓莹人设与本地文案
     rate_limit.py    深度指挥计次与去重
   tests/             pytest 接口测试
 ```
@@ -67,6 +69,14 @@ flutter build ios --release --no-codesign
 
 返回服务状态与 AI 密钥是否已配置。
 
+### POST /v1/scan
+
+Doka `ai_camera/v2` 同构的 multipart 接口，返回 `{code,message,data}`，其中 `data` 为 `CameraData`（含 `SubAreaRectNorm`、`PredictSubAreaPicURL`、`ComposeReason` 等）。详见 `backend/DOKA_INFERENCE.md`。
+
+### POST /v1/persona/line
+
+用林晓莹的口吻把结构化构图 brief 变成一句可执行口令；配置 `AI_API_KEY` 时走 DeepSeek `deepseek-chat`，否则本地文案。
+
 ### POST /v1/compose
 
 请求体：
@@ -100,4 +110,6 @@ flutter build ios --release --no-codesign
 ## 安全说明
 
 - `AI_API_KEY`、服务器密码等敏感信息只通过环境变量或 GitHub Secrets 注入，不写入仓库。
-- 服务端不持久化上传帧；模型不可用、超时或返回低置信度结果时自动回退几何规则。
+- 服务端不持久化上传帧；scan 模板会在 `backend/static/templates` 短期缓存并自动清理。
+- DeepSeek 只接收结构化 brief，不接收图片；几何与主体框由端侧 Vision / 服务端轻量规则完成。
+- 模型不可用、超时或返回低置信度结果时自动回退本地规则。

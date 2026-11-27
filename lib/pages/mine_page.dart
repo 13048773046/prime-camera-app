@@ -52,7 +52,7 @@ class _MinePageState extends State<MinePage> {
                       _row(
                         icon: Icons.center_focus_strong_outlined,
                         label: '构图引导',
-                        value: '设备端 AI',
+                        value: '林晓莹 · 设备端',
                       ),
                       _switchRow(
                         icon: Icons.grid_3x3_rounded,
@@ -104,7 +104,7 @@ class _MinePageState extends State<MinePage> {
                       _row(
                         icon: Icons.info_outline_rounded,
                         label: '版本',
-                        value: '0.3.1',
+                        value: '0.3.2',
                       ),
                     ]),
                     const SizedBox(height: 32),
@@ -166,16 +166,34 @@ class _MinePageState extends State<MinePage> {
       child: Row(
         children: [
           Container(
-            width: 42,
-            height: 42,
+            width: 46,
+            height: 46,
+            padding: const EdgeInsets.all(2),
             decoration: const BoxDecoration(
-              color: Color(0xFF2A2B31),
               shape: BoxShape.circle,
+              gradient: SweepGradient(
+                colors: [
+                  Color(0xFF80EEFF),
+                  Color(0xFFB1CFFF),
+                  Color(0xFFFFD2F6),
+                  Color(0xFFFFC38F),
+                  Color(0xFF80EEFF),
+                ],
+              ),
             ),
-            child: const Icon(
-              Icons.camera_alt_rounded,
-              size: 21,
-              color: PrimeColor.white70,
+            child: ClipOval(
+              child: Image.asset(
+                'assets/ai/xiaoying_face.png',
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => const ColoredBox(
+                  color: Color(0xFF2A2B31),
+                  child: Icon(
+                    Icons.auto_awesome_rounded,
+                    size: 21,
+                    color: PrimeColor.white70,
+                  ),
+                ),
+              ),
             ),
           ),
           const SizedBox(width: 12),
@@ -185,16 +203,16 @@ class _MinePageState extends State<MinePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'PRIME 本地模式',
+                  '林晓莹',
                   style: TextStyle(
                     fontSize: 17,
                     color: PrimeColor.white,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                SizedBox(height: 6),
+                SizedBox(height: 5),
                 Text(
-                  '照片只保存在这台手机',
+                  '你的 AI 构图导演 · 本地模式',
                   style: TextStyle(fontSize: 12, color: PrimeColor.white38),
                 ),
               ],

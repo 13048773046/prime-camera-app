@@ -195,6 +195,8 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       restart(result: result)
     case "switchCamera":
       switchCamera(result: result)
+    case "capturePreviewJpeg":
+      capturePreviewJpeg(result: result)
     case "takePhoto":
       let args = call.arguments as? [String: Any]
       let flash = args?["flash"] as? Bool ?? false
@@ -208,6 +210,30 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  /// 给服务端 scan 抓一帧当前取景。只在预览帧被消费时调用，绝不影响
+  /// 预览纹理或快门路径；拿不到 buffer 就返回 nil，让 Dart 继续端侧引导。
+  private func capturePreviewJpeg(result: @escaping FlutterResult) {
+    bufferLock.lock()
+    let buffer = latestBuffer
+    bufferLock.unlock()
+    guard let buffer = buffer else {
+      result(nil)
+      return
+    }
+    let ciImage = CIImage(cvPixelBuffer: buffer)
+    let context = CIContext(options: [.useSoftwareRenderer: false])
+    guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+      result(nil)
+      return
+    }
+    let image = UIImage(cgImage: cgImage, scale: 1, orientation: .up)
+    guard let data = image.jpegData(compressionQuality: 0.62) else {
+      result(nil)
+      return
+    }
+    result(FlutterStandardTypedData(bytes: data))
   }
 
   private func initialize(result: @escaping FlutterResult) {
