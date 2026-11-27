@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:prime_camera/pages/camera_page.dart';
 import 'package:prime_camera/services/camera_service.dart';
+import 'package:prime_camera/services/guidance.dart';
 
 /// 端到端（Dart 侧）验证：原生 guidance 消息 → CameraService 流 → 页面口令。
 void main() {
@@ -31,7 +32,10 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: CameraPage(camera: CameraService(channel: channel)),
+        home: CameraPage(
+          camera: CameraService(channel: channel),
+          initialScene: SceneMode.portrait,
+        ),
       ),
     );
     await tester.pump(const Duration(milliseconds: 300));
@@ -39,7 +43,6 @@ void main() {
     expect(find.text('稳住手机'), findsOneWidget);
     expect(find.text('正在识别主体与场景'), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('scene-portrait')));
     await tester.pump(const Duration(milliseconds: 2000));
     expect(find.text('识别完成'), findsOneWidget);
 
@@ -64,7 +67,7 @@ void main() {
 
     expect(find.text('构图已锁定'), findsOneWidget);
     expect(find.text('可以按快门'), findsOneWidget);
-    expect(find.text('全身 · 切换构图'), findsOneWidget);
+    expect(find.text('切换构图方案'), findsOneWidget);
 
     // 用户往一个方向移动手机后，主体框变化，口令必须跟着变；
     // 这是“移动位置没反应”的回归测试：不能一直停在上一条口令。
@@ -87,7 +90,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('构图建议'), findsOneWidget);
-    expect(find.text('手机往左带一点，把人物放进环'), findsOneWidget);
+    expect(find.textContaining('手机往左带'), findsOneWidget);
     expect(find.text('构图已锁定'), findsNothing);
   });
 }

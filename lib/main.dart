@@ -1,12 +1,16 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
 import 'pages/camera_page.dart';
+import 'services/guidance.dart';
 import 'theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SystemChrome.setPreferredOrientations(const [DeviceOrientation.portraitUp]);
+  await SystemChrome.setPreferredOrientations(const [
+    DeviceOrientation.portraitUp,
+  ]);
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   runApp(const PrimeApp());
 }
@@ -24,7 +28,10 @@ class PrimeApp extends StatelessWidget {
         if (!kIsWeb) return child ?? const SizedBox.shrink();
         return _WebPreviewStage(child: child ?? const SizedBox.shrink());
       },
-      home: CameraPage(demo: kIsWeb),
+      home: CameraPage(
+        demo: kIsWeb,
+        initialScene: kIsWeb ? SceneMode.portrait : SceneMode.general,
+      ),
     );
   }
 }

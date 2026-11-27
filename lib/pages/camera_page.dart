@@ -10,13 +10,20 @@ import '../services/compose_api.dart';
 import '../services/guidance.dart';
 import '../theme.dart';
 import '../widgets/guide_ring.dart';
+import 'gallery_page.dart';
 import 'result_page.dart';
 
 class CameraPage extends StatefulWidget {
-  const CameraPage({super.key, this.camera, this.demo = false});
+  const CameraPage({
+    super.key,
+    this.camera,
+    this.demo = false,
+    this.initialScene = SceneMode.general,
+  });
 
   final CameraService? camera;
   final bool demo;
+  final SceneMode initialScene;
 
   @override
   State<CameraPage> createState() => _CameraPageState();
@@ -39,6 +46,122 @@ extension CaptureRatioX on CaptureRatio {
   };
 }
 
+class _FilterOption {
+  const _FilterOption(this.id, this.label, this.filter);
+
+  final String id;
+  final String label;
+  final ColorFilter? filter;
+}
+
+const List<_FilterOption> _filterOptions = [
+  _FilterOption('none', '原片', null),
+  _FilterOption(
+    'clear',
+    '清透',
+    ColorFilter.matrix(<double>[
+      1.08,
+      0,
+      0,
+      0,
+      4,
+      0,
+      1.08,
+      0,
+      0,
+      4,
+      0,
+      0,
+      1.08,
+      0,
+      4,
+      0,
+      0,
+      0,
+      1,
+      0,
+    ]),
+  ),
+  _FilterOption(
+    'warm',
+    '暖调',
+    ColorFilter.matrix(<double>[
+      1.10,
+      0,
+      0,
+      0,
+      6,
+      0,
+      1.02,
+      0,
+      0,
+      2,
+      0,
+      0,
+      0.92,
+      0,
+      -2,
+      0,
+      0,
+      0,
+      1,
+      0,
+    ]),
+  ),
+  _FilterOption(
+    'cool',
+    '冷调',
+    ColorFilter.matrix(<double>[
+      0.94,
+      0,
+      0,
+      0,
+      -2,
+      0,
+      1.0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1.10,
+      0,
+      6,
+      0,
+      0,
+      0,
+      1,
+      0,
+    ]),
+  ),
+  _FilterOption(
+    'mono',
+    '黑白',
+    ColorFilter.matrix(<double>[
+      0.2126,
+      0.7152,
+      0.0722,
+      0,
+      0,
+      0.2126,
+      0.7152,
+      0.0722,
+      0,
+      0,
+      0.2126,
+      0.7152,
+      0.0722,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+    ]),
+  ),
+];
+
 class _ShotPlan {
   const _ShotPlan({
     required this.index,
@@ -46,6 +169,9 @@ class _ShotPlan {
     required this.zoomLabel,
     required this.framing,
     required this.alignment,
+    required this.targetHeight,
+    required this.recommendedDistance,
+    required this.description,
   });
 
   final int index;
@@ -53,6 +179,23 @@ class _ShotPlan {
   final String zoomLabel;
   final String framing;
   final Alignment alignment;
+
+  /// 目标主体高度（占取景框高度）。拍法不是一句口号：它会直接决定
+  /// 画面里的黄色主体框要多大、人物应该站在哪里。
+  final double targetHeight;
+  final double recommendedDistance;
+  final String description;
+
+  double get targetCenterX => switch (alignment) {
+    Alignment.centerLeft => 0.34,
+    Alignment.centerRight => 0.66,
+    _ => 0.5,
+  };
+
+  double get targetCenterY => switch (alignment) {
+    Alignment.topCenter => 0.38,
+    _ => 0.44,
+  };
 }
 
 class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
@@ -64,6 +207,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   bool _aligned = false;
   double _alignProgress = 0.12;
   SceneMode _scene = SceneMode.general;
+  bool _sceneLocked = false;
   CaptureRatio _ratio = CaptureRatio.threeFour;
   int _zoomIndex = 1;
   bool _capturing = false;
@@ -77,6 +221,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   Timer? _analyzeTimer;
   Timer? _frameWatchdog;
   Timer? _promptTimer;
+  Timer? _distanceTimer;
+  bool _distanceCardOpen = false;
+  bool _distanceCardDismissed = false;
   StreamSubscription<GuidanceFrame>? _guidanceSub;
   StreamSubscription<CameraFrameTick>? _frameSub;
   final LiveComposer _composer = const LiveComposer();
@@ -84,6 +231,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   bool _analyzing = false;
   bool _restarting = false;
   int _restartAttempts = 0;
+  bool _composeEnabled = true;
+  String _filterId = 'none';
+  final List<String> _recentPhotos = [];
   int _lastGuidanceTs = 0;
   int _lastFrameTs = 0;
   bool _wasAligned = false;
@@ -91,8 +241,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   String? _promptSubtitle;
   String? _lastActionLabel;
 
-  static const List<double> _zoomValues = [0.5, 1.0, 2.0, 3.0];
-  static const List<String> _zoomLabels = ['.5', '1x', '2', '3'];
+  static const List<double> _zoomValues = [0.5, 1.0, 2.0, 5.0];
+  static const List<String> _zoomLabels = ['.5', '1x', '2', '5'];
 
   static const List<_ShotPlan> _plans = [
     _ShotPlan(
@@ -101,6 +251,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       zoomLabel: '1×',
       framing: '居中',
       alignment: Alignment.center,
+      targetHeight: 0.60,
+      recommendedDistance: 2.2,
+      description: '全身入镜，头顶留一拳，脚底留一点',
     ),
     _ShotPlan(
       index: 2,
@@ -108,13 +261,19 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       zoomLabel: '2×',
       framing: '右三分',
       alignment: Alignment.centerRight,
+      targetHeight: 0.42,
+      recommendedDistance: 1.5,
+      description: '卡到膝盖以上，人物放在右三分',
     ),
     _ShotPlan(
       index: 3,
       title: '九分身',
-      zoomLabel: '3×',
+      zoomLabel: '5×',
       framing: '居中',
       alignment: Alignment.topCenter,
+      targetHeight: 0.28,
+      recommendedDistance: 0.9,
+      description: '卡到胸以上，眼睛放在上三分',
     ),
   ];
 
@@ -125,6 +284,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       zoomLabel: '1×',
       framing: '右三分',
       alignment: Alignment.centerRight,
+      targetHeight: 0.34,
+      recommendedDistance: 0,
+      description: '把街道消失点放进右三分',
     ),
     _ShotPlan(
       index: 2,
@@ -132,13 +294,19 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       zoomLabel: '2×',
       framing: '居中',
       alignment: Alignment.center,
+      targetHeight: 0.42,
+      recommendedDistance: 0,
+      description: '让门洞成为画框，主体放在里面',
     ),
     _ShotPlan(
       index: 3,
       title: '局部细节',
-      zoomLabel: '3×',
+      zoomLabel: '5×',
       framing: '居中',
       alignment: Alignment.topCenter,
+      targetHeight: 0.34,
+      recommendedDistance: 0,
+      description: '走近拍纹理，让画面只有一个重点',
     ),
   ];
 
@@ -149,6 +317,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       zoomLabel: '1×',
       framing: '居中',
       alignment: Alignment.center,
+      targetHeight: 0.44,
+      recommendedDistance: 0,
+      description: '主体居中，四周留出环境',
     ),
     _ShotPlan(
       index: 2,
@@ -156,6 +327,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       zoomLabel: '1×',
       framing: '右三分',
       alignment: Alignment.centerRight,
+      targetHeight: 0.40,
+      recommendedDistance: 0,
+      description: '主体放右三分，左侧留呼吸空间',
     ),
     _ShotPlan(
       index: 3,
@@ -163,18 +337,25 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       zoomLabel: '2×',
       framing: '居中',
       alignment: Alignment.center,
+      targetHeight: 0.30,
+      recommendedDistance: 0,
+      description: '让主体占满画面，裁掉干扰',
     ),
   ];
 
   List<_ShotPlan> get _currentPlans => switch (_scene) {
     SceneMode.portrait => _plans,
     SceneMode.street => _streetPlans,
-    SceneMode.general || SceneMode.landscape || SceneMode.still => _generalPlans,
+    SceneMode.general ||
+    SceneMode.landscape ||
+    SceneMode.still => _generalPlans,
   };
 
   @override
   void initState() {
     super.initState();
+    _scene = widget.initialScene;
+    _sceneLocked = widget.initialScene != SceneMode.general;
     WidgetsBinding.instance.addObserver(this);
     _bootstrap();
   }
@@ -188,6 +369,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     _guidanceSub?.cancel();
     _frameSub?.cancel();
     _promptTimer?.cancel();
+    _distanceTimer?.cancel();
     super.dispose();
   }
 
@@ -250,8 +432,10 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   void _startDemoAnalysis() {
     _alignTimer?.cancel();
+    _resetDistanceCard();
     _analyzeTimer?.cancel();
     setState(() {
+      _composeEnabled = true;
       _analyzing = true;
       _guide = null;
       _aligned = false;
@@ -284,7 +468,43 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     });
   }
 
+  void _resetDistanceCard() {
+    _distanceTimer?.cancel();
+    _distanceCardOpen = false;
+    _distanceCardDismissed = false;
+  }
+
+  void _maybeShowDistanceCard(ComposeResult guide) {
+    if (!mounted || _distanceCardOpen || _distanceCardDismissed) return;
+    if (_analyzing || guide.distanceMeters == null || guide.confidence <= 0) {
+      return;
+    }
+    if (_status != CameraStatus.ready && _status != CameraStatus.demo) return;
+    setState(() => _distanceCardOpen = true);
+    _distanceTimer?.cancel();
+    _distanceTimer = Timer(const Duration(seconds: 7), () {
+      if (mounted) setState(() => _distanceCardOpen = false);
+    });
+  }
+
+  void _dismissDistanceCard({bool start = false}) {
+    _distanceTimer?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _distanceCardOpen = false;
+      _distanceCardDismissed = true;
+    });
+    if (start) {
+      final plan = _activePlan;
+      final placement = plan.targetCenterX < 0.45
+          ? '左三分'
+          : (plan.targetCenterX > 0.58 ? '右三分' : '中间');
+      _showPrompt('开始构图', '把主体放进$placement的黄色目标环', 2200);
+    }
+  }
+
   void _startLiveGuidance() {
+    _resetDistanceCard();
     _guidanceSub?.cancel();
     _frameSub?.cancel();
     _frameWatchdog?.cancel();
@@ -295,6 +515,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     _restartAttempts = 0;
     _wasAligned = false;
     setState(() {
+      _composeEnabled = true;
       _analyzing = true;
       _guide = null;
       _aligned = false;
@@ -338,15 +559,34 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   }
 
   void _onGuidanceFrame(GuidanceFrame frame) {
-    if (!mounted || !_live) return;
+    if (!mounted || !_live || !_composeEnabled) return;
     _lastFrameTs = math.max(_lastFrameTs, frame.ts);
     // UI 最高 4fps 更新，避免识别帧率带着整页抖动。
     if (frame.ts - _lastGuidanceTs < 240) return;
     _lastGuidanceTs = frame.ts;
+    // 没有手动锁场景时，先让 AI 自己判断：画面里有人就进人像流程，
+    // 只有显著物就继续用通用/风景构图。这样用户不需要先选一个胶囊。
+    var mode = _scene;
+    if (!_sceneLocked) {
+      if (frame.box != null || frame.face != null) {
+        mode = SceneMode.portrait;
+      } else if (frame.saliency != null && frame.saliency![2] > 0.42) {
+        mode = SceneMode.landscape;
+      } else {
+        mode = SceneMode.general;
+      }
+      if (mode != _scene) {
+        setState(() => _scene = mode);
+      }
+    }
     final guide = _composer.compose(
       frame,
       zoom: _zoomValues[_zoomIndex],
-      mode: _scene,
+      mode: mode,
+      targetCenterX: _activePlan.targetCenterX,
+      targetCenterY: _activePlan.targetCenterY,
+      targetHeight: _activePlan.targetHeight,
+      recommendedDistance: _activePlan.recommendedDistance,
     );
     final newlyAligned = guide.confidence > 0 && _isAlignedGuide(guide);
     setState(() {
@@ -354,6 +594,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _aligned = newlyAligned;
       _alignProgress = newlyAligned ? 1.0 : guide.progress;
     });
+    _maybeShowDistanceCard(guide);
     if (newlyAligned && !_wasAligned) {
       HapticFeedback.lightImpact();
       _showPrompt('构图已锁定', '可以按快门', 1500);
@@ -375,49 +616,57 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       case 0:
         return const ComposeResult(
           subject: 'person',
-          subjectBox: [0.32, 0.34, 0.28, 0.40],
-          targetBox: [0.28, 0.26, 0.26, 0.22],
+          subjectBox: [0.32, 0.22, 0.28, 0.66],
+          targetBox: [0.16, 0.18, 0.68, 0.68],
           targetZoom: 0.5,
           horizonFix: -0.4,
           hint: '退到墙角，让街道进来',
           reasons: ['主体占比过大', '需要更多环境'],
           confidence: 0.58,
+          distanceMeters: 1.7,
+          recommendedDistance: 2.2,
           source: 'rule',
         );
       case 2:
         return const ComposeResult(
           subject: 'person',
-          subjectBox: [0.38, 0.32, 0.25, 0.36],
-          targetBox: [0.40, 0.26, 0.20, 0.16],
+          subjectBox: [0.40, 0.24, 0.26, 0.48],
+          targetBox: [0.44, 0.26, 0.40, 0.40],
           targetZoom: 2.0,
           horizonFix: 0.2,
           hint: '再靠近半步，肩膀切出画面',
           reasons: ['两侧留白过多', '主体可以更满'],
           confidence: 0.64,
+          distanceMeters: 1.7,
+          recommendedDistance: 2.2,
           source: 'rule',
         );
       case 3:
         return const ComposeResult(
           subject: 'person',
-          subjectBox: [0.44, 0.34, 0.18, 0.24],
-          targetBox: [0.42, 0.30, 0.16, 0.13],
+          subjectBox: [0.44, 0.28, 0.18, 0.34],
+          targetBox: [0.34, 0.30, 0.32, 0.32],
           targetZoom: 3.0,
           horizonFix: 0.0,
           hint: '手肘夹紧，对准眼睛',
           reasons: ['长焦易抖', '对焦点在眼部'],
           confidence: 0.66,
+          distanceMeters: 1.7,
+          recommendedDistance: 2.2,
           source: 'rule',
         );
       default:
         return const ComposeResult(
           subject: 'person',
-          subjectBox: [0.35, 0.36, 0.27, 0.40],
-          targetBox: [0.33, 0.28, 0.26, 0.20],
+          subjectBox: [0.34, 0.22, 0.28, 0.66],
+          targetBox: [0.18, 0.18, 0.64, 0.64],
           targetZoom: 1.0,
           horizonFix: 0.0,
           hint: '后退半步，镜头降到胸口',
           reasons: ['头顶留白偏多', '主体略偏近'],
           confidence: 0.62,
+          distanceMeters: 1.7,
+          recommendedDistance: 2.2,
           source: 'rule',
         );
     }
@@ -426,8 +675,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   ComposeResult _scenePreset(int index, SceneMode mode) {
     final street = mode == SceneMode.street;
     final target = street
-        ? const [0.54, 0.22, 0.24, 0.30]
-        : const [0.34, 0.30, 0.32, 0.32];
+        ? const [0.54, 0.22, 0.24, 0.24]
+        : const [0.34, 0.27, 0.32, 0.32];
     final subject = street
         ? const [0.16, 0.30, 0.30, 0.34]
         : const [0.34, 0.30, 0.26, 0.30];
@@ -457,6 +706,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _alignProgress = 0.12;
       _aligned = false;
     });
+    _maybeShowDistanceCard(preset);
     int step = 0;
     const stops = [0.34, 0.6, 0.84, 1.0];
     _alignTimer = Timer.periodic(const Duration(milliseconds: 950), (timer) {
@@ -474,7 +724,25 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     });
   }
 
+  void _exitCompose() {
+    _alignTimer?.cancel();
+    _analyzeTimer?.cancel();
+    _distanceTimer?.cancel();
+    setState(() {
+      _composeEnabled = false;
+      _analyzing = false;
+      _guide = null;
+      _aligned = false;
+      _alignProgress = 0.12;
+      _distanceCardOpen = false;
+      _distanceCardDismissed = true;
+      _lastActionLabel = null;
+    });
+    _showPrompt('已退出构图', '自由取景，随时可以再进 AI 构图', 1700);
+  }
+
   void _startAi() {
+    _composeEnabled = true;
     if (_live) {
       _startLiveGuidance();
     } else if (_status == CameraStatus.demo) {
@@ -491,6 +759,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   Future<void> _selectZoom(int index) async {
     if (index == 0 && !_ultraWideAvailable) return;
+    _resetDistanceCard();
     if (_zoomIndex == index) return;
     setState(() => _zoomIndex = index);
     // 先让演示口令立刻跟手，再等原生回报实际可用倍率。
@@ -514,8 +783,10 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     return best;
   }
 
-  void _selectScene(SceneMode scene) {
-    if (_scene == scene) return;
+  void _selectScene(SceneMode scene, {bool lock = true}) {
+    if (_scene == scene && (_sceneLocked == lock || !lock)) return;
+    _resetDistanceCard();
+    _sceneLocked = lock;
     setState(() {
       _scene = scene;
       _guide = null;
@@ -543,9 +814,16 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     // 按下快门立刻给声/触/白闪，不等原生照片回调。
     SystemSound.play(SystemSoundType.click);
     HapticFeedback.mediumImpact();
-    final path = await _camera.takePhoto(flash: _flashOn);
+    final path = await _camera.takePhoto(
+      flash: _flashOn,
+      filter: _filterId,
+      ratio: _ratio.name,
+    );
     await Future.delayed(const Duration(milliseconds: 80));
     if (!mounted) return;
+    if (path != null && path.isNotEmpty) {
+      _recentPhotos.insert(0, path);
+    }
     setState(() {
       _flash = false;
       _capturing = false;
@@ -597,6 +875,34 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     setState(() => _gridOn = !_gridOn);
   }
 
+  void _openGallery() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => GalleryPage(
+          photos: List<String>.of(_recentPhotos),
+          onMine: _openSettings,
+        ),
+      ),
+    );
+  }
+
+  void _openFilterSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) => _FilterSheet(
+        selected: _filterId,
+        onSelect: (id, label) {
+          Navigator.of(sheetContext).pop();
+          if (id == _filterId) return;
+          setState(() => _filterId = id);
+          _showPrompt('滤镜 · $label', '已套用到取景与下一张照片', 1800);
+        },
+      ),
+    );
+  }
+
   void _openPlanSheet() {
     if (_planSheetOpen) return;
     setState(() => _planSheetOpen = true);
@@ -608,7 +914,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         plans: _currentPlans,
         selectedIndex: _zoomIndex,
         sceneTitle: switch (_scene) {
-          SceneMode.portrait => 'Romy 的 3 种拍法',
+          SceneMode.portrait => 'PRIME 的 3 种拍法',
           SceneMode.street => '街道的 3 种拍法',
           SceneMode.landscape => '风景的 3 种拍法',
           SceneMode.still => '静物的 3 种拍法',
@@ -631,7 +937,15 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (_) => const _SettingsSheet(),
+      isScrollControlled: true,
+      builder: (_) => _SettingsSheet(
+        scene: _scene,
+        onScene: _selectScene,
+        gridOn: _gridOn,
+        onGrid: _toggleGrid,
+        flashOn: _flashOn,
+        onFlash: _toggleFlash,
+      ),
     );
   }
 
@@ -683,21 +997,23 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
-  /// 取景窗按 3:4 默认比例铺满宽度，高度由比例决定；底部控制区独立在画面外。
+  /// 照着 Doka 相机页的结构重排：
+  /// 3:4 圆角取景窗 → 48dp 固定选项行 → 96dp 功能行 → 52dp 玻璃三栏导航。
+  /// 取景窗和功能行之间不再留一大块空白，也不再在画面里放品牌标题。
   Widget _buildFramedLayout() {
     return SafeArea(
       child: LayoutBuilder(
         builder: (context, constraints) {
           final maxWidth = constraints.maxWidth;
           final maxHeight = constraints.maxHeight;
-          const controlsReserve = 236.0;
-          final maxStageHeight = math.max(220.0, maxHeight - controlsReserve);
+          const bottomReserve = 238.0;
+          final maxStageHeight = math.max(220.0, maxHeight - bottomReserve);
           final fullWidthHeight = maxWidth * _ratio.heightOverWidth;
-          double stageHeight = fullWidthHeight;
-          double stageWidth = maxWidth;
-          if (stageHeight > maxStageHeight) {
-            stageHeight = maxStageHeight;
-            stageWidth = stageHeight / _ratio.heightOverWidth;
+          double stageHeight = math.min(fullWidthHeight, maxStageHeight);
+          double stageWidth = stageHeight / _ratio.heightOverWidth;
+          if (stageWidth > maxWidth) {
+            stageWidth = maxWidth;
+            stageHeight = stageWidth * _ratio.heightOverWidth;
           }
 
           return Column(
@@ -710,7 +1026,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                     width: stageWidth,
                     height: stageHeight,
                     child: ClipRRect(
-                      borderRadius: BorderRadius.circular(18),
+                      borderRadius: BorderRadius.circular(24),
                       child: Stack(
                         fit: StackFit.expand,
                         children: [
@@ -719,7 +1035,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                             top: 0,
                             left: 0,
                             right: 0,
-                            height: 108,
+                            height: 104,
                             child: IgnorePointer(
                               child: DecoratedBox(
                                 decoration: BoxDecoration(
@@ -727,8 +1043,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                                     begin: Alignment.topCenter,
                                     end: Alignment.bottomCenter,
                                     colors: [
-                                      Colors.black.withValues(alpha: 0.56),
-                                      Colors.black.withValues(alpha: 0.18),
+                                      Colors.black.withValues(alpha: 0.50),
+                                      Colors.black.withValues(alpha: 0.14),
                                       Colors.transparent,
                                     ],
                                   ),
@@ -744,10 +1060,50 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                           ),
                           if (_promptTitle != null)
                             Positioned(
-                              top: 56,
+                              top: 58,
                               left: 18,
                               right: 18,
                               child: _buildPromptChip(),
+                            ),
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            bottom: 10,
+                            child: _buildFocalPill(),
+                          ),
+                          Positioned(
+                            right: 12,
+                            bottom: 10,
+                            child: _buildAiFilterEntry(),
+                          ),
+                          if (_distanceCardOpen && _guide != null)
+                            Positioned(
+                              left: 30,
+                              right: 30,
+                              bottom: 58,
+                              child: TweenAnimationBuilder<double>(
+                                tween: Tween(begin: 0, end: 1),
+                                duration: const Duration(milliseconds: 340),
+                                curve: Curves.easeOutCubic,
+                                builder: (context, value, child) => Opacity(
+                                  opacity: value,
+                                  child: Transform.translate(
+                                    offset: Offset(0, 18 * (1 - value)),
+                                    child: Transform.scale(
+                                      scale: 0.96 + 0.04 * value,
+                                      child: child,
+                                    ),
+                                  ),
+                                ),
+                                child: _DistanceCard(
+                                  guide: _guide!,
+                                  plan: _activePlan,
+                                  scene: _scene,
+                                  onStart: () =>
+                                      _dismissDistanceCard(start: true),
+                                  onClose: _dismissDistanceCard,
+                                ),
+                              ),
                             ),
                         ],
                       ),
@@ -755,12 +1111,12 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                   ),
                 ),
               ),
-              Expanded(
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: _buildBottomControls(),
-                ),
-              ),
+              const SizedBox(height: 4),
+              _buildDokaOptionRow(),
+              _buildDokaFunctionRow(),
+              const Spacer(),
+              _buildDokaTabBar(),
+              const SizedBox(height: 16),
             ],
           );
         },
@@ -770,68 +1126,46 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   // ---------------------------------------------------------------- header
 
+  /// Doka 顶栏只有左上「主体选择」和右上「设置」，没有品牌字和三个工具图标。
   Widget _buildTopBar() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 8, 14, 4),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
       child: Row(
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                '定焦',
-                style: TextStyle(
-                  fontSize: 18,
-                  height: 1,
-                  color: PrimeColor.white,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 3,
-                ),
-              ),
-              const SizedBox(height: 5),
-              Text(
-                'PRIME',
-                style: PrimeType.overline.copyWith(
-                  color: PrimeColor.white24,
-                  letterSpacing: 3,
-                ),
-              ),
-            ],
+          _glassTopButton(
+            Icons.visibility_off_outlined,
+            _startAi,
+            tooltip: '重新识别主体',
           ),
           const Spacer(),
-          _topIcon(
-            _flashOn ? Icons.bolt : Icons.bolt_outlined,
-            _toggleFlash,
-            active: _flashOn,
+          _glassTopButton(
+            Icons.settings_outlined,
+            _openSettings,
+            tooltip: '设置',
           ),
-          _topIcon(Icons.tune_rounded, _openSettings),
         ],
       ),
     );
   }
 
-  Widget _topIcon(IconData icon, VoidCallback onTap, {bool active = false}) {
-    return GestureDetector(
+  Widget _glassTopButton(IconData icon, VoidCallback onTap, {String? tooltip}) {
+    final button = GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Container(
-        width: 38,
-        height: 38,
-        margin: const EdgeInsets.only(left: 2),
+        width: 40,
+        height: 40,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: active ? PrimeColor.white12 : Colors.transparent,
+          color: Colors.black.withValues(alpha: 0.10),
+          border: Border.all(color: PrimeColor.white12, width: 0.8),
         ),
         alignment: Alignment.center,
-        child: Icon(
-          icon,
-          size: 19,
-          color: active ? PrimeColor.white : PrimeColor.white70,
-        ),
+        child: Icon(icon, size: 21, color: PrimeColor.white70),
       ),
     );
+    return tooltip == null ? button : Tooltip(message: tooltip, child: button);
   }
-
   // ----------------------------------------------------------------- stage
 
   Widget _buildStage() {
@@ -856,7 +1190,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 analyzing: _analyzing,
                 showGrid: _gridOn,
                 frameRect: previewRect,
-                subjectLabel: _subjectLabel,
+                subjectLabel: _subjectLabel == '主体'
+                    ? '拍照主体'
+                    : '拍照主体 · $_subjectLabel',
               ),
             ),
           ],
@@ -880,12 +1216,19 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
+  _FilterOption get _activeFilter {
+    for (final filter in _filterOptions) {
+      if (filter.id == _filterId) return filter;
+    }
+    return _filterOptions.first;
+  }
+
   Widget _buildPreview() {
     switch (_status) {
       case CameraStatus.ready:
         final id = _camera.textureId;
         if (id != null) {
-          return ClipRect(
+          final texture = ClipRect(
             child: FittedBox(
               fit: BoxFit.cover,
               clipBehavior: Clip.hardEdge,
@@ -896,10 +1239,18 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
               ),
             ),
           );
+          final filter = _activeFilter.filter;
+          return filter == null
+              ? texture
+              : ColorFiltered(colorFilter: filter, child: texture);
         }
         return const ColoredBox(color: PrimeColor.black);
       case CameraStatus.demo:
-        return Image.asset('assets/demo/scene.jpg', fit: BoxFit.cover);
+        final image = Image.asset('assets/demo/scene.jpg', fit: BoxFit.cover);
+        final filter = _activeFilter.filter;
+        return filter == null
+            ? image
+            : ColorFiltered(colorFilter: filter, child: image);
       case CameraStatus.permissionDenied:
       case CameraStatus.unavailable:
         return ColoredBox(
@@ -996,10 +1347,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   Widget _buildFocalPill() {
     return Center(
       child: Container(
+        height: 38,
         padding: const EdgeInsets.all(4),
         decoration: BoxDecoration(
-          color: const Color(0xB3000000),
-          borderRadius: BorderRadius.circular(24),
+          color: const Color(0x99000000),
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(color: PrimeColor.white12, width: 0.8),
         ),
         child: Row(
@@ -1015,7 +1367,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 160),
                   curve: Curves.easeOut,
-                  width: i == _zoomIndex ? 44 : 36,
+                  width: i == _zoomIndex ? 42 : 34,
                   height: 30,
                   margin: const EdgeInsets.symmetric(horizontal: 1),
                   alignment: Alignment.center,
@@ -1035,7 +1387,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                           ? PrimeColor.black
                           : (i == 0 && !_ultraWideAvailable
                                 ? PrimeColor.white24
-                                : PrimeColor.white38),
+                                : PrimeColor.white54),
                       fontWeight: FontWeight.w600,
                       fontFeatures: const [FontFeature.tabularFigures()],
                     ),
@@ -1048,182 +1400,99 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildAiFilterEntry() {
+    return GestureDetector(
+      onTap: _openFilterSheet,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.black.withValues(alpha: 0.32),
+          border: Border.all(color: PrimeColor.white24, width: 0.8),
+        ),
+        alignment: Alignment.center,
+        child: const _SparkleMark(size: 18, color: PrimeColor.white70),
+      ),
+    );
+  }
+
   // --------------------------------------------------------------- controls
 
-  Widget _buildBottomControls() {
+  Widget _buildDokaOptionRow() {
+    final composing = _guide != null && !_analyzing;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildScenePicker(),
-          const SizedBox(height: 4),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
-            child: _guide != null && !_analyzing
-                ? _buildPlanPill()
-                : const SizedBox(height: 30),
-          ),
-          const SizedBox(height: 3),
-          _buildFocalPill(),
-          const SizedBox(height: 4),
-          _buildUtilityRow(),
-          _buildShutterRow(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildScenePicker() {
-    return SizedBox(
-      height: 30,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          for (final scene in SceneMode.values)
-            GestureDetector(
-              key: ValueKey('scene-${scene.name}'),
-              onTap: () => _selectScene(scene),
-              behavior: HitTestBehavior.opaque,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 160),
-                margin: const EdgeInsets.symmetric(horizontal: 3),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 13,
-                  vertical: 5,
-                ),
-                decoration: BoxDecoration(
-                  color: scene == _scene
-                      ? PrimeColor.white
-                      : Colors.black.withValues(alpha: 0.24),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: scene == _scene
-                        ? Colors.transparent
-                        : PrimeColor.white12,
-                    width: 0.8,
-                  ),
-                ),
-                child: Text(
-                  scene.label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    height: 1,
-                    letterSpacing: 1,
-                    color: scene == _scene
-                        ? PrimeColor.black
-                        : PrimeColor.white54,
-                    fontWeight: scene == _scene
-                        ? FontWeight.w600
-                        : FontWeight.w400,
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildUtilityRow() {
-    return SizedBox(
-      height: 32,
-      child: Row(
-        children: [
-          _utilityIcon(Icons.grid_view_rounded, _toggleGrid, active: _gridOn),
-          const Spacer(),
-          GestureDetector(
-            key: const ValueKey('ratio-button'),
-            onTap: _openRatioSheet,
-            behavior: HitTestBehavior.opaque,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-              decoration: BoxDecoration(
-                color: PrimeColor.white06,
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: PrimeColor.white12, width: 0.8),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: SizedBox(
+        height: 48,
+        child: composing
+            ? Row(
                 children: [
-                  Text(
-                    _ratio.label,
-                    style: PrimeType.overline.copyWith(
-                      color: PrimeColor.white70,
-                      letterSpacing: 1.4,
+                  SizedBox(
+                    width: 70,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: _multiComposeOption(),
                     ),
                   ),
-                  const SizedBox(width: 4),
-                  const Icon(
-                    Icons.unfold_more_rounded,
-                    size: 12,
-                    color: PrimeColor.white38,
+                  Expanded(child: Center(child: _buildSwitchPlanCapsule())),
+                  SizedBox(
+                    width: 70,
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: _ratioOption(),
+                    ),
                   ),
                 ],
+              )
+            : Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _multiComposeOption(),
+                  _subjectOption(),
+                  _ratioOption(),
+                  _flipOption(),
+                ],
               ),
-            ),
-          ),
-          const Spacer(),
-          _utilityIcon(Icons.cameraswitch_outlined, _switchCamera),
-        ],
       ),
     );
   }
 
-  Widget _utilityIcon(
-    IconData icon,
-    VoidCallback onTap, {
-    bool active = false,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: SizedBox(
-        width: 32,
-        height: 32,
-        child: Icon(
-          icon,
-          size: 18,
-          color: active ? PrimeColor.white : PrimeColor.white38,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPlanPill() {
+  Widget _multiComposeOption() {
     return GestureDetector(
       onTap: _openPlanSheet,
       behavior: HitTestBehavior.opaque,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
-        decoration: BoxDecoration(
-          color: PrimeColor.white06,
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: PrimeColor.white12, width: 0.8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+      child: SizedBox(
+        width: 48,
+        height: 48,
+        child: Stack(
+          clipBehavior: Clip.none,
           children: [
-            const Icon(
-              Icons.grid_view_rounded,
-              size: 14,
-              color: PrimeColor.white38,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              _scene == SceneMode.portrait
-                  ? '${_activePlan.title} · 切换构图'
-                  : '${_activePlan.title} · 切换拍法',
-              style: PrimeType.caption.copyWith(
-                color: PrimeColor.white54,
-                fontSize: 11,
+            const Align(
+              child: Icon(
+                Icons.auto_awesome_mosaic_outlined,
+                size: 24,
+                color: PrimeColor.white38,
               ),
             ),
-            const SizedBox(width: 6),
-            const Icon(
-              Icons.keyboard_arrow_down_rounded,
-              size: 16,
-              color: PrimeColor.white38,
+            Positioned(
+              top: 2,
+              right: -10,
+              child: Container(
+                height: 12,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: BoxDecoration(
+                  color: PrimeColor.white12,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: PrimeColor.white12, width: 0.6),
+                ),
+                alignment: Alignment.center,
+                child: const Text(
+                  'Beta',
+                  style: TextStyle(fontSize: 7, color: PrimeColor.white70),
+                ),
+              ),
             ),
           ],
         ),
@@ -1231,22 +1500,162 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildShutterRow() {
-    return SizedBox(
-      height: 82,
-      child: Row(
-        children: [
-          Expanded(
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: _bottomAction(label: '相册', child: _buildAlbumButton()),
+  Widget _subjectOption() {
+    return GestureDetector(
+      onTap: _startAi,
+      behavior: HitTestBehavior.opaque,
+      child: const SizedBox(
+        width: 48,
+        height: 48,
+        child: Icon(
+          Icons.center_focus_weak_rounded,
+          size: 24,
+          color: PrimeColor.white70,
+        ),
+      ),
+    );
+  }
+
+  Widget _ratioOption() {
+    return GestureDetector(
+      key: const ValueKey('ratio-button'),
+      onTap: _openRatioSheet,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 48,
+        height: 48,
+        child: Center(
+          child: Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(5),
+              border: Border.all(color: PrimeColor.white54, width: 1),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              _ratio.label,
+              style: const TextStyle(
+                fontSize: 8,
+                height: 1,
+                color: PrimeColor.white70,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
-          _buildShutterButton(),
-          Expanded(
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: _bottomAction(label: 'AI 构图', child: _buildAiButton()),
+        ),
+      ),
+    );
+  }
+
+  Widget _flipOption() {
+    return GestureDetector(
+      onTap: _switchCamera,
+      behavior: HitTestBehavior.opaque,
+      child: const SizedBox(
+        width: 48,
+        height: 48,
+        child: Icon(
+          Icons.cameraswitch_outlined,
+          size: 24,
+          color: PrimeColor.white70,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSwitchPlanCapsule() {
+    return GestureDetector(
+      key: const ValueKey('plan-button'),
+      onTap: _openPlanSheet,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: 36,
+        padding: const EdgeInsets.all(1),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          gradient: const LinearGradient(
+            colors: [
+              Color(0xFFE8FFFC),
+              Color(0xFFB1CFFF),
+              Color(0xFFFFD2F6),
+              Color(0xFFFFC38F),
+            ],
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+          ),
+        ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: const Color(0xE612161C),
+            borderRadius: BorderRadius.circular(17),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.crop_free_rounded,
+                size: 14,
+                color: Color(0xFFFFD2F6),
+              ),
+              const SizedBox(width: 7),
+              Text(
+                '切换构图方案',
+                style: PrimeType.caption.copyWith(
+                  color: PrimeColor.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 4),
+              const Icon(
+                Icons.keyboard_arrow_down_rounded,
+                size: 16,
+                color: PrimeColor.white54,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDokaFunctionRow() {
+    return SizedBox(
+      height: 96,
+      child: Stack(
+        children: [
+          Positioned(
+            left: 12,
+            top: 10,
+            child: _functionAction(
+              icon: Icons.camera_alt_outlined,
+              label: '相机滤镜',
+              onTap: _openFilterSheet,
+            ),
+          ),
+          Align(
+            alignment: Alignment.center,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [_buildShutterButton()],
+            ),
+          ),
+          Positioned(
+            right: 12,
+            top: 10,
+            child: _functionAction(
+              icon: _composeEnabled && _guide != null && !_analyzing
+                  ? Icons.close_rounded
+                  : Icons.auto_awesome,
+              label: _analyzing
+                  ? '分析中'
+                  : (_composeEnabled && _guide != null ? '退出构图' : 'AI 构图'),
+              onTap: _composeEnabled && _guide != null && !_analyzing
+                  ? _exitCompose
+                  : _startAi,
+              active: _analyzing || (_composeEnabled && _guide != null),
             ),
           ),
         ],
@@ -1254,59 +1663,37 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _bottomAction({required String label, required Widget child}) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        child,
-        const SizedBox(height: 5),
-        Text(
-          label,
-          style: PrimeType.overline.copyWith(
-            color: PrimeColor.white38,
-            letterSpacing: 1.2,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildAlbumButton() {
-    return Container(
-      width: 44,
-      height: 44,
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: PrimeColor.surfaceLift,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: PrimeColor.white12, width: 0.8),
-      ),
-      child: Image.asset(
-        'assets/demo/scene.jpg',
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) => const Icon(
-          Icons.photo_library_outlined,
-          size: 20,
-          color: PrimeColor.white38,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAiButton() {
+  Widget _functionAction({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    bool active = false,
+  }) {
     return GestureDetector(
-      onTap: _startAi,
-      child: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(color: PrimeColor.white12, width: 0.8),
-        ),
-        alignment: Alignment.center,
-        child: _SparkleMark(
-          size: 18,
-          color: _analyzing ? PrimeColor.white38 : PrimeColor.white70,
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 66,
+        height: 64,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 32,
+              color: active ? PrimeColor.white : PrimeColor.white70,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1,
+                color: active ? PrimeColor.white : PrimeColor.white70,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1321,37 +1708,129 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         scale: _capturing ? 0.93 : 1.0,
         duration: const Duration(milliseconds: 120),
         child: SizedBox(
-          width: 78,
-          height: 78,
+          width: 76,
+          height: 76,
           child: Stack(
             alignment: Alignment.center,
             children: [
               CustomPaint(
-                size: const Size(78, 78),
+                size: const Size(76, 76),
                 painter: _ShutterProgressPainter(
                   progress: _alignProgress,
                   aligned: _aligned,
                 ),
               ),
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                width: _capturing ? 46 : 58,
-                height: _capturing ? 46 : 58,
+              Container(
+                width: 72,
+                height: 72,
+                padding: const EdgeInsets.all(2.5),
                 decoration: BoxDecoration(
-                  color: PrimeColor.white,
                   shape: BoxShape.circle,
+                  gradient: const SweepGradient(
+                    colors: [
+                      Color(0xFFE8FFFC),
+                      Color(0xFF80EEFF),
+                      Color(0xFFB1CFFF),
+                      Color(0xFFFFD2F6),
+                      Color(0xFFFFC38F),
+                      Color(0xFFE8FFFC),
+                    ],
+                  ),
                   boxShadow: _aligned
                       ? [
                           BoxShadow(
-                            color: PrimeColor.white.withValues(alpha: 0.18),
-                            blurRadius: 18,
+                            color: const Color(0xFFFFD2F6)
+                                .withValues(alpha: 0.24),
+                            blurRadius: 22,
                             spreadRadius: 2,
                           ),
                         ]
                       : null,
                 ),
+                child: ClipOval(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.asset(
+                        'assets/ai/photographer_256.png',
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) =>
+                            const ColoredBox(color: Color(0xFF17171A)),
+                      ),
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 5,
+                        child: Text(
+                          'PRIME AI',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 7.5,
+                            height: 1,
+                            color: Colors.white.withValues(alpha: 0.92),
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.6,
+                            shadows: const [
+                              Shadow(
+                                color: Color(0xCC000000),
+                                blurRadius: 4,
+                                offset: Offset(0, 1),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDokaTabBar() {
+    return Center(
+      child: Container(
+        width: 310,
+        height: 52,
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.28),
+          borderRadius: BorderRadius.circular(26),
+          border: Border.all(color: PrimeColor.white12, width: 0.8),
+        ),
+        child: Row(
+          children: [
+            Expanded(child: _tabItem('相机', active: true)),
+            Expanded(child: _tabItem('相册', onTap: _openGallery)),
+            Expanded(child: _tabItem('我的', onTap: _openSettings)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _tabItem(String label, {bool active = false, VoidCallback? onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: 44,
+        decoration: BoxDecoration(
+          color: active ? PrimeColor.white12 : Colors.transparent,
+          borderRadius: BorderRadius.circular(22),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            height: 1,
+            color: active ? PrimeColor.white : const Color(0xFFBFBFBF),
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),
@@ -1453,6 +1932,316 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
             fontSize: 12,
             color: PrimeColor.white54,
             fontWeight: FontWeight.w500,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ------------------------------------------------------------ distance card
+
+/// Doka 式“距离导演”卡：不是泛泛一句“走近一点”，而是给出约数、
+/// 最近/最远建议距离，并让用户按「开始构图」进入对位。
+class _DistanceCard extends StatelessWidget {
+  const _DistanceCard({
+    required this.guide,
+    required this.plan,
+    required this.scene,
+    required this.onStart,
+    required this.onClose,
+  });
+
+  final ComposeResult guide;
+  final _ShotPlan plan;
+  final SceneMode scene;
+  final VoidCallback onStart;
+  final VoidCallback onClose;
+
+  double get _distance => guide.distanceMeters ?? plan.recommendedDistance;
+  double get _recommended =>
+      guide.recommendedDistance ??
+      (plan.recommendedDistance > 0 ? plan.recommendedDistance : _distance);
+  double get _near => guide.nearDistance ?? math.max(0.4, _recommended - 0.45);
+  double get _far => guide.farDistance ?? _recommended + 0.75;
+
+  bool get _isPortrait => scene == SceneMode.portrait;
+
+  String get _title {
+    if (!_isPortrait || _recommended <= 0) return '把主体放进目标环';
+    if (_distance < _recommended - 0.55) return '再退一点';
+    if (_distance > _recommended + 0.75) return '再近一点';
+    return '距离合适';
+  }
+
+  String get _subtitle {
+    if (!_isPortrait || _recommended <= 0) {
+      return '约 ${_distance.toStringAsFixed(1)} 米 · 跟着黄色主体框微移';
+    }
+    if (_distance < _recommended - 0.55) {
+      return '约 ${_distance.toStringAsFixed(1)} 米 · 可继续后退，人物会更完整';
+    }
+    if (_distance > _recommended + 0.75) {
+      return '约 ${_distance.toStringAsFixed(1)} 米 · 再靠近，人物会更突出';
+    }
+    return '约 ${_distance.toStringAsFixed(1)} 米 · 可继续后退，人物会更完整';
+  }
+
+  bool get _good => _isPortrait && (_distance - _recommended).abs() <= 0.65;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = ((_distance - _near) / math.max(0.01, _far - _near)).clamp(
+      0.05,
+      0.95,
+    );
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(22),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+          decoration: BoxDecoration(
+            color: const Color(0xF20C0C0E),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: PrimeColor.white12, width: 0.8),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x66000000),
+                blurRadius: 24,
+                offset: Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const _AiAvatar(size: 42),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'PRIME AI',
+                          style: TextStyle(
+                            fontSize: 12,
+                            height: 1,
+                            color: PrimeColor.white54,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 1.2,
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          _title,
+                          style: const TextStyle(
+                            fontSize: 19,
+                            height: 1.05,
+                            color: PrimeColor.white,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _statusPill(),
+                  GestureDetector(
+                    onTap: onClose,
+                    behavior: HitTestBehavior.opaque,
+                    child: const Padding(
+                      padding: EdgeInsets.only(left: 8, top: 2, bottom: 2),
+                      child: Icon(
+                        Icons.close_rounded,
+                        size: 16,
+                        color: PrimeColor.white38,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 7),
+              Text(
+                _subtitle,
+                maxLines: 2,
+                style: const TextStyle(
+                  fontSize: 13,
+                  height: 1.45,
+                  color: PrimeColor.white54,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '最近建议距离\n人物更突出',
+                      style: TextStyle(
+                        fontSize: 11,
+                        height: 1.35,
+                        color: PrimeColor.white38,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      '最远建议距离\n环境更完整',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        height: 1.35,
+                        color: PrimeColor.white38,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              SizedBox(
+                height: 18,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final width = constraints.maxWidth;
+                    final x = width * progress;
+                    return Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 8,
+                          child: Container(
+                            height: 2,
+                            color: PrimeColor.white24,
+                          ),
+                        ),
+                        Positioned(
+                          left: 0,
+                          top: 8,
+                          width: x,
+                          child: Container(height: 2, color: PrimeColor.white),
+                        ),
+                        Positioned(
+                          left: x - 5,
+                          top: 2,
+                          child: const Icon(
+                            Icons.arrow_drop_down_rounded,
+                            size: 18,
+                            color: PrimeColor.white,
+                          ),
+                        ),
+                        const Positioned(left: 0, top: 5, child: _TickMark()),
+                        const Positioned(right: 0, top: 5, child: _TickMark()),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 10),
+              GestureDetector(
+                onTap: onStart,
+                behavior: HitTestBehavior.opaque,
+                child: Container(
+                  height: 44,
+                  width: double.infinity,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF4F1F6),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const Text(
+                    '开始构图',
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: Color(0xFF3A3540),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _statusPill() {
+    final good = _good;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: good ? const Color(0xFF14351F) : const Color(0xFF2A2313),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            good ? Icons.check_rounded : Icons.arrow_upward_rounded,
+            size: 13,
+            color: good ? const Color(0xFF8BE0A6) : const Color(0xFFFFD76A),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            good ? '距离合适' : '继续调整',
+            style: TextStyle(
+              fontSize: 11,
+              color: good ? const Color(0xFF8BE0A6) : const Color(0xFFFFD76A),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TickMark extends StatelessWidget {
+  const _TickMark();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(width: 2, height: 8, color: PrimeColor.white38);
+  }
+}
+
+class _AiAvatar extends StatelessWidget {
+  const _AiAvatar({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      padding: const EdgeInsets.all(2),
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: SweepGradient(
+          colors: [
+            Color(0xFF80EEFF),
+            Color(0xFFB1CFFF),
+            Color(0xFFFFD2F6),
+            Color(0xFFFFC38F),
+            Color(0xFF80EEFF),
+          ],
+        ),
+      ),
+      child: ClipOval(
+        child: Image.asset(
+          'assets/ai/photographer_256.png',
+          width: size - 4,
+          height: size - 4,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => Container(
+            color: const Color(0xFF111114),
+            alignment: Alignment.center,
+            child: const _SparkleMark(size: 16, color: PrimeColor.white),
           ),
         ),
       ),
@@ -1583,6 +2372,130 @@ class _ShutterProgressPainter extends CustomPainter {
 }
 
 // ---------------------------------------------------------------- sheets
+
+/// Doka 式滤镜托盘：横向缩略图，选中项用白框和白色文字。
+class _FilterSheet extends StatefulWidget {
+  const _FilterSheet({required this.selected, required this.onSelect});
+
+  final String selected;
+  final void Function(String id, String label) onSelect;
+
+  @override
+  State<_FilterSheet> createState() => _FilterSheetState();
+}
+
+class _FilterSheetState extends State<_FilterSheet> {
+  late String _selected = widget.selected;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        decoration: const BoxDecoration(
+          color: Color(0xFF0B0B0B),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          border: Border(top: BorderSide(color: Color(0x22FFFFFF))),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text(
+                  '相机滤镜',
+                  style: TextStyle(
+                    fontSize: 17,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                GestureDetector(
+                  onTap: () => Navigator.of(context).maybePop(),
+                  child: const Icon(
+                    Icons.close_rounded,
+                    size: 20,
+                    color: Colors.white38,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              height: 104,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: _filterOptions.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 10),
+                itemBuilder: (context, index) {
+                  final filter = _filterOptions[index];
+                  final active = filter.id == _selected;
+                  return GestureDetector(
+                    onTap: () {
+                      setState(() => _selected = filter.id);
+                      widget.onSelect(filter.id, filter.label);
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: SizedBox(
+                      width: 72,
+                      child: Column(
+                        children: [
+                          Container(
+                            width: 72,
+                            height: 72,
+                            clipBehavior: Clip.antiAlias,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: active ? Colors.white : Colors.white12,
+                                width: active ? 1.6 : 0.8,
+                              ),
+                            ),
+                            child: ColorFiltered(
+                              colorFilter:
+                                  filter.filter ??
+                                  const ColorFilter.mode(
+                                    Colors.transparent,
+                                    BlendMode.dst,
+                                  ),
+                              child: Image.asset(
+                                'assets/demo/scene.jpg',
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 7),
+                          Text(
+                            filter.label,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: active ? Colors.white : Colors.white54,
+                              fontWeight: active
+                                  ? FontWeight.w600
+                                  : FontWeight.w400,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              '滤镜会同时应用到取景预览和下一张照片。',
+              style: TextStyle(fontSize: 10, color: Colors.white38),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _PlanSheet extends StatelessWidget {
   const _PlanSheet({
@@ -1741,7 +2654,9 @@ class _PlanSheet extends StatelessWidget {
                                 horizontal: 5,
                               ),
                               child: Text(
-                                '${plan.zoomLabel} · ${plan.framing}',
+                                plan.recommendedDistance > 0
+                                    ? '${plan.zoomLabel} · ${plan.framing} · 约 ${plan.recommendedDistance.toStringAsFixed(1)} 米'
+                                    : '${plan.zoomLabel} · ${plan.framing}',
                                 style: const TextStyle(
                                   fontSize: 10,
                                   height: 1.2,
@@ -1883,7 +2798,21 @@ class _RatioSheet extends StatelessWidget {
 }
 
 class _SettingsSheet extends StatelessWidget {
-  const _SettingsSheet();
+  const _SettingsSheet({
+    required this.scene,
+    required this.onScene,
+    required this.gridOn,
+    required this.onGrid,
+    required this.flashOn,
+    required this.onFlash,
+  });
+
+  final SceneMode scene;
+  final ValueChanged<SceneMode> onScene;
+  final bool gridOn;
+  final VoidCallback onGrid;
+  final bool flashOn;
+  final VoidCallback onFlash;
 
   @override
   Widget build(BuildContext context) {
@@ -1894,10 +2823,11 @@ class _SettingsSheet extends StatelessWidget {
       ),
       child: SafeArea(
         top: false,
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Center(
                 child: Container(
@@ -1910,25 +2840,86 @@ class _SettingsSheet extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '设置',
-                  style: TextStyle(
-                    fontSize: 20,
-                    color: PrimeColor.white,
-                    fontWeight: FontWeight.w600,
-                  ),
+              const Text(
+                '设置',
+                style: TextStyle(
+                  fontSize: 20,
+                  color: PrimeColor.white,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
+              const SizedBox(height: 18),
+              const Text(
+                '拍摄场景',
+                style: TextStyle(fontSize: 13, color: PrimeColor.white70),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '默认自动判断；也可以锁定一个场景，让 AI 按它给拍法。',
+                style: TextStyle(fontSize: 11, color: PrimeColor.white38),
+              ),
               const SizedBox(height: 10),
-              _row('构图网格', '关闭'),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final item in SceneMode.values)
+                    GestureDetector(
+                      key: ValueKey('scene-${item.name}'),
+                      onTap: () {
+                        onScene(item);
+                        Navigator.of(context).pop();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 13,
+                          vertical: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: item == scene
+                              ? PrimeColor.white
+                              : PrimeColor.white06,
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: item == scene
+                                ? Colors.transparent
+                                : PrimeColor.white12,
+                            width: 0.8,
+                          ),
+                        ),
+                        child: Text(
+                          item.label,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: item == scene
+                                ? PrimeColor.black
+                                : PrimeColor.white54,
+                            fontWeight: item == scene
+                                ? FontWeight.w600
+                                : FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              _toggleRow('构图网格', gridOn, onGrid),
+              _toggleRow('闪光灯', flashOn, onFlash),
               _row('保存水印', '开启'),
-              _row('版本', '0.2.0'),
+              _row('版本', '0.3.0'),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _toggleRow(String label, bool on, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: _row(label, on ? '开启' : '关闭'),
     );
   }
 

@@ -202,10 +202,16 @@ class CameraService {
     }
   }
 
-  Future<String?> takePhoto({bool flash = false}) async {
+  Future<String?> takePhoto({
+    bool flash = false,
+    String filter = 'none',
+    String ratio = 'threeFour',
+  }) async {
     try {
       return await _channel.invokeMethod<String>('takePhoto', <String, dynamic>{
         'flash': flash,
+        'filter': filter,
+        'ratio': ratio,
       });
     } on MissingPluginException {
       return null;

@@ -14,6 +14,9 @@ class ComposeResult {
   final String source;
   final String? actionLabel;
   final double? distanceMeters;
+  final double? recommendedDistance;
+  final double? nearDistance;
+  final double? farDistance;
   final double progress;
 
   const ComposeResult({
@@ -28,6 +31,9 @@ class ComposeResult {
     required this.source,
     this.actionLabel,
     this.distanceMeters,
+    this.recommendedDistance,
+    this.nearDistance,
+    this.farDistance,
     this.progress = 0.12,
   });
 

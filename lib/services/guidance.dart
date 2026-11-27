@@ -32,11 +32,11 @@ extension SceneModeX on SceneMode {
 
   /// 没有识别结果时也要先把目标环画出来，用户才知道该往哪挪。
   List<double> get defaultTargetBox => switch (this) {
-    SceneMode.general => const [0.34, 0.30, 0.32, 0.32],
-    SceneMode.portrait => const [0.34, 0.08, 0.32, 0.62],
-    SceneMode.landscape => const [0.34, 0.30, 0.32, 0.32],
-    SceneMode.street => const [0.54, 0.22, 0.24, 0.30],
-    SceneMode.still => const [0.34, 0.30, 0.32, 0.32],
+    SceneMode.general => const [0.34, 0.27, 0.32, 0.32],
+    SceneMode.portrait => const [0.30, 0.15, 0.40, 0.40],
+    SceneMode.landscape => const [0.34, 0.27, 0.32, 0.32],
+    SceneMode.street => const [0.54, 0.22, 0.24, 0.24],
+    SceneMode.still => const [0.34, 0.27, 0.32, 0.32],
   };
 }
 
@@ -99,12 +99,58 @@ class LiveComposer {
     GuidanceFrame frame, {
     required double zoom,
     SceneMode mode = SceneMode.portrait,
+    double targetCenterX = 0.5,
+    double targetCenterY = 0.42,
+    double targetHeight = 0.58,
+    double recommendedDistance = 0,
   }) {
-    if (mode == SceneMode.portrait) return _composePortrait(frame, zoom);
-    return _composeScene(frame, zoom: zoom, mode: mode);
+    if (mode == SceneMode.portrait) {
+      return _composePortrait(
+        frame,
+        zoom,
+        targetCenterX: targetCenterX,
+        targetCenterY: targetCenterY,
+        targetHeight: targetHeight,
+        planDistance: recommendedDistance,
+      );
+    }
+    return _composeScene(
+      frame,
+      zoom: zoom,
+      mode: mode,
+      targetCenterX: targetCenterX,
+      targetCenterY: targetCenterY,
+      targetHeight: targetHeight,
+    );
   }
 
-  ComposeResult _composePortrait(GuidanceFrame frame, double zoom) {
+  /// 把“主体放在哪”变成真实目标框：中心、右三分、左三分都由计划决定，
+  /// 宽度按主体的真实长宽比推出来，不再所有场景都用同一个居中大框。
+  List<double> _targetBox({
+    required List<double>? subjectBox,
+    required double centerX,
+    required double centerY,
+    required double height,
+    double fallbackAspect = 0.75,
+  }) {
+    // 成片始终是一个 3:4 画幅，渐变框也要按 3:4 画；不能再跟着
+    // 人物自身的长宽比走，否则会收成一条很窄的竖条，看起来不像取景框。
+    final aspect = fallbackAspect;
+    final h = height.clamp(0.18, 0.78);
+    final w = (h * aspect).clamp(0.16, 0.64);
+    final x = (centerX - w / 2).clamp(0.035, 1 - w - 0.035);
+    final y = (centerY - h / 2).clamp(0.035, 1 - h - 0.035);
+    return [x, y, w, h];
+  }
+
+  ComposeResult _composePortrait(
+    GuidanceFrame frame,
+    double zoom, {
+    required double targetCenterX,
+    required double targetCenterY,
+    required double targetHeight,
+    required double planDistance,
+  }) {
     final face = frame.face;
     final roll = frame.roll;
     // 框必须贴着真实主体：有人体框就用人体框；只有脸时就用脸框，
@@ -115,7 +161,12 @@ class LiveComposer {
       return ComposeResult(
         subject: 'person',
         subjectBox: const [],
-        targetBox: const [0.34, 0.08, 0.32, 0.62],
+        targetBox: _targetBox(
+          subjectBox: null,
+          centerX: targetCenterX,
+          centerY: targetCenterY,
+          height: targetHeight,
+        ),
         targetZoom: zoom,
         horizonFix: roll,
         hint: '把人物放进取景框',
@@ -124,54 +175,73 @@ class LiveComposer {
         source: 'vision',
         actionLabel: '找主体',
         distanceMeters: null,
+        recommendedDistance: planDistance > 0 ? planDistance : null,
         progress: 0.12,
       );
     }
 
-    // 有脸用脸，脸比人体框更稳；脸太小说明离得远。
+    // 有身体框时用身体高度判断距离；只有脸时，用脸高反推一个稳定的
+    // “等效身体高度”，避免同一张脸在全身/半身计划里来回跳。
     final hasFace = face != null && face.length == 4;
-    final metricH = hasFace ? face[3] : box[3];
-    final metricTop = hasFace ? face[1] : box[1];
-    final targetH = hasFace ? 0.16 : 0.58;
-    final farLimit = hasFace ? 0.125 : 0.50;
-    final nearLimit = hasFace ? 0.20 : 0.70;
-    final topHigh = hasFace ? 0.20 : 0.16;
-    final topLow = 0.035;
-    final topTarget = hasFace ? 0.12 : 0.10;
-
+    final hasBody = frame.box != null && frame.box!.length == 4;
+    final metricH = hasBody
+        ? box[3]
+        : (hasFace ? (face[3] * 3.2).clamp(0.18, 0.78) : box[3]);
+    final metricTop = hasBody
+        ? box[1]
+        : (hasFace ? (face[1] - face[3] * 0.45).clamp(0.0, 1.0) : box[1]);
+    final targetH = targetHeight.clamp(0.18, 0.78);
+    final farLimit = targetH * 0.86;
+    final nearLimit = targetH * 1.14;
     final distance = hasFace ? _estimateDistance(frame, face[2]) : null;
+    final recommended = planDistance > 0
+        ? planDistance
+        : (distance == null
+              ? null
+              : (distance * metricH / targetH).clamp(0.6, 5.0));
 
     String hint;
     List<String> reasons;
     String action;
     bool aligned = false;
+    final placement = targetCenterX < 0.45
+        ? '左三分'
+        : (targetCenterX > 0.58 ? '右三分' : '中间');
 
     if (metricH < farLimit) {
-      hint = '再靠近半步，让人物大一点';
+      hint = recommended == null
+          ? '再靠近一点，让人物大一点'
+          : '再靠近半步，站到约 ${recommended.toStringAsFixed(1)} 米';
       reasons = const ['人物在画面里偏小', '环境占得太多'];
-      final delta = distance == null
-          ? null
-          : math.max(0.2, (distance - 1.5).abs());
-      action = delta == null ? '走近' : '再近\n${delta.toStringAsFixed(1)}m';
+      final delta = (distance != null && recommended != null)
+          ? (distance - recommended).abs()
+          : null;
+      action = delta == null || delta < 0.2
+          ? '走近'
+          : '再近\n${delta.toStringAsFixed(1)}m';
     } else if (metricH > nearLimit) {
-      hint = '再退半步，给头顶留点空间';
+      hint = recommended == null
+          ? '再退半步，给头顶留点空间'
+          : '再退半步，退到约 ${recommended.toStringAsFixed(1)} 米';
       reasons = const ['人物有点太满', '边缘容易切到'];
-      final delta = distance == null
-          ? null
-          : math.max(0.2, (distance - 1.5).abs());
-      action = delta == null ? '退后' : '再退\n${delta.toStringAsFixed(1)}m';
-    } else if (metricTop > topHigh) {
+      final delta = (distance != null && recommended != null)
+          ? (distance - recommended).abs()
+          : null;
+      action = delta == null || delta < 0.2
+          ? '退后'
+          : '再退\n${delta.toStringAsFixed(1)}m';
+    } else if (metricTop > 0.22) {
       hint = '镜头降到胸口';
       reasons = const ['头顶留白偏多', '机位稍微高了'];
       action = '降机位';
-    } else if (metricTop < topLow) {
-      hint = '镜头抬高一点';
+    } else if (metricTop < 0.035) {
+      hint = '镜头抬高一点，给发梢留白';
       reasons = const ['头顶快贴边了', '给发梢留点白'];
       action = '抬机位';
-    } else if ((box[0] + box[2] / 2 - 0.5).abs() > 0.17) {
-      final toLeft = box[0] + box[2] / 2 < 0.5;
-      hint = toLeft ? '手机往左带一点，把人物放进环' : '手机往右带一点，把人物放进环';
-      reasons = const ['主体还没进瞄准环', '跟着环的方向微移'];
+    } else if ((box[0] + box[2] / 2 - targetCenterX).abs() > 0.10) {
+      final toLeft = box[0] + box[2] / 2 < targetCenterX;
+      hint = toLeft ? '手机往左带，把人物放到$placement' : '手机往右带，把人物放到$placement';
+      reasons = ['现在还没落在$placement', '跟着黄色主体框微移'];
       action = toLeft ? '左移' : '右移';
     } else if (roll.abs() > 2.0) {
       hint = '手机回正，看住水平线';
@@ -184,7 +254,7 @@ class LiveComposer {
     } else {
       aligned = true;
       hint = '可以拍了，稳住呼吸';
-      reasons = const ['距离合适', '机位水平都对齐'];
+      reasons = ['距离合适', '人物在$placement，机位水平'];
       action = '已对齐';
     }
 
@@ -192,20 +262,27 @@ class LiveComposer {
         ? 1.0
         : (0.15 +
                   0.85 *
-                      (0.55 *
+                      (0.52 *
                               _near(
                                 metricH,
                                 targetH,
-                                (nearLimit - farLimit) * 0.55,
+                                (nearLimit - farLimit) * 0.60,
                               ) +
-                          0.25 * _near(metricTop, topTarget, 0.14) +
+                          0.20 *
+                              _near(box[0] + box[2] / 2, targetCenterX, 0.18) +
+                          0.08 * _near(metricTop, 0.12, 0.14) +
                           0.20 * _near(roll, 0, 3.0)))
               .clamp(0.15, 0.96);
 
     return ComposeResult(
-      subject: frame.box != null ? 'person' : 'face',
+      subject: hasBody ? 'person' : 'face',
       subjectBox: box,
-      targetBox: const [0.34, 0.08, 0.32, 0.62],
+      targetBox: _targetBox(
+        subjectBox: box,
+        centerX: targetCenterX,
+        centerY: targetCenterY,
+        height: targetH,
+      ),
       targetZoom: zoom,
       horizonFix: roll,
       hint: hint,
@@ -215,6 +292,11 @@ class LiveComposer {
       actionLabel: action,
       progress: progress,
       distanceMeters: distance,
+      recommendedDistance: recommended,
+      nearDistance: recommended == null
+          ? null
+          : math.max(0.4, recommended - 0.45),
+      farDistance: recommended == null ? null : recommended + 0.75,
     );
   }
 
@@ -223,13 +305,19 @@ class LiveComposer {
     GuidanceFrame frame, {
     required double zoom,
     required SceneMode mode,
+    required double targetCenterX,
+    required double targetCenterY,
+    required double targetHeight,
   }) {
     final box = frame.saliency ?? frame.box;
     final roll = frame.roll;
     final isStreet = mode == SceneMode.street;
-    final targetBox = isStreet
-        ? const [0.54, 0.22, 0.24, 0.30]
-        : const [0.34, 0.30, 0.32, 0.32];
+    final targetBox = _targetBox(
+      subjectBox: box,
+      centerX: targetCenterX,
+      centerY: targetCenterY,
+      height: targetHeight,
+    );
     final targetCx = targetBox[0] + targetBox[2] / 2;
     final targetCy = targetBox[1] + targetBox[3] / 2;
 

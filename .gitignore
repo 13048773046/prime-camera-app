@@ -14,3 +14,20 @@ ios/Pods/
 dist/
 *.iml
 dist_final/
+
+# Doka decompile artifacts (large)
+analysis/doka/apktool/
+analysis/doka/jadx/
+analysis/doka/jadx_full/
+analysis/doka/tools/
+analysis/doka/*.apk
+analysis/doka/*.log
+analysis/doka/source.html
+analysis/doka/down.json
+analysis/doka/apk_url.txt
+dist_native/
+
+# Local UI screenshots and download scratch
+analysis/*.png
+analysis/ref_*
+analysis/doka/detail.js

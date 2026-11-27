@@ -1,7 +1,7 @@
 name: prime_camera
 description: "定焦 PRIME · AI 构图相机 MVP"
 publish_to: 'none'
-version: 0.2.3+5
+version: 0.3.0+6
 
 environment:
   sdk: ^3.13.5
@@ -20,6 +20,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/demo/
+    - assets/ai/
   fonts:
     - family: PrimeSans
       fonts:

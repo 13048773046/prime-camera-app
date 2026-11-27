@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import CoreMotion
 import Flutter
 import ImageIO
@@ -195,8 +196,11 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     case "switchCamera":
       switchCamera(result: result)
     case "takePhoto":
-      let flash = (call.arguments as? [String: Any])?["flash"] as? Bool ?? false
-      takePhoto(flash: flash, result: result)
+      let args = call.arguments as? [String: Any]
+      let flash = args?["flash"] as? Bool ?? false
+      let filter = args?["filter"] as? String ?? "none"
+      let ratio = args?["ratio"] as? String ?? "threeFour"
+      takePhoto(flash: flash, filter: filter, ratio: ratio, result: result)
     case "saveToAlbum":
       saveToAlbum(call: call, result: result)
     case "share":
@@ -811,7 +815,12 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
 
   // MARK: - Photo
 
-  private func takePhoto(flash: Bool, result: @escaping FlutterResult) {
+  private func takePhoto(
+    flash: Bool,
+    filter: String,
+    ratio: String,
+    result: @escaping FlutterResult
+  ) {
     sessionQueue.async { [weak self] in
       guard let self = self, self.isConfigured else {
         DispatchQueue.main.async { result(nil) }
@@ -858,10 +867,11 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
           }
           return
         }
+        let finalData = self.applyFilter(data, filter: filter, ratio: ratio) ?? data
         let url = FileManager.default.temporaryDirectory
           .appendingPathComponent("prime-\(UUID().uuidString).jpg")
         do {
-          try data.write(to: url, options: .atomic)
+          try finalData.write(to: url, options: .atomic)
           DispatchQueue.main.async { result(url.path) }
         } catch {
           DispatchQueue.main.async {
@@ -872,6 +882,83 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       self.photoDelegates[id] = delegate
       self.photoOutput.capturePhoto(with: settings, delegate: delegate)
     }
+  }
+
+  /// 传感器原生多为 4:3；按用户选的取景比例做中心裁切，成片和预览一致。
+  private func crop(_ image: CIImage, ratio: String) -> CIImage {
+    let extent = image.extent
+    guard extent.width > 0, extent.height > 0 else { return image }
+    let target: CGFloat
+    switch ratio {
+    case "oneOne": target = 1.0
+    case "sixteenNine": target = 9.0 / 16.0
+    default: target = 3.0 / 4.0
+    }
+    let current = extent.width / extent.height
+    if abs(current - target) < 0.01 { return image }
+    if current > target {
+      let width = extent.height * target
+      let x = extent.midX - width / 2
+      return image.cropped(to: CGRect(
+        x: x, y: extent.minY, width: width, height: extent.height
+      ))
+    }
+    let height = extent.width / target
+    let y = extent.midY - height / 2
+    return image.cropped(to: CGRect(
+      x: extent.minX, y: y, width: extent.width, height: height
+    ))
+  }
+
+  /// 预览里用 Flutter ColorFilter 近似，成片用 CoreImage 落到同一套色彩。
+  private func applyFilter(_ data: Data, filter: String, ratio: String) -> Data? {
+    guard var input = CIImage(
+      data: data,
+      options: [.applyOrientationProperty: true]
+    ) else { return data }
+    input = crop(input, ratio: ratio)
+    if filter == "none" { return render(input) }
+    let output: CIImage
+    switch filter {
+    case "mono":
+      output = input.applyingFilter("CIPhotoEffectMono")
+    case "clear":
+      output = input.applyingFilter("CIColorControls", parameters: [
+        kCIInputSaturationKey: 1.08,
+        kCIInputContrastKey: 1.10,
+        kCIInputBrightnessKey: 0.03,
+      ])
+    case "warm":
+      output = input
+        .applyingFilter("CITemperatureAndTint", parameters: [
+          "inputNeutral": CIVector(x: 6500, y: 0),
+          "inputTargetNeutral": CIVector(x: 5200, y: 0),
+        ])
+        .applyingFilter("CIColorControls", parameters: [
+          kCIInputSaturationKey: 1.04,
+        ])
+    case "cool":
+      output = input
+        .applyingFilter("CITemperatureAndTint", parameters: [
+          "inputNeutral": CIVector(x: 6500, y: 0),
+          "inputTargetNeutral": CIVector(x: 8000, y: 0),
+        ])
+        .applyingFilter("CIColorControls", parameters: [
+          kCIInputSaturationKey: 1.02,
+        ])
+    default:
+      return render(input)
+    }
+    return render(output)
+  }
+
+  private func render(_ image: CIImage) -> Data? {
+    let context = CIContext(options: nil)
+    guard let cgImage = context.createCGImage(image, from: image.extent) else {
+      return nil
+    }
+    let ui = UIImage(cgImage: cgImage, scale: 1, orientation: .up)
+    return ui.jpegData(compressionQuality: 0.95)
   }
 
   private func saveToAlbum(call: FlutterMethodCall, result: @escaping FlutterResult) {
