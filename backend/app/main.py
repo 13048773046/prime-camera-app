@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .ai_client import analyze_with_model, persona_line
@@ -15,6 +16,8 @@ from .persona import PERSONA_NAME, PERSONA_ROLE, local_reason
 from .rate_limit import CounterStore
 from .api_doka import app_router as doka_app_router
 from .api_doka import router as doka_router
+from .api_admin import router as admin_router
+from . import store
 from .schemas import (
     CameraFilterModel,
     ComposeRequest,
@@ -41,7 +44,24 @@ template_dir = backend_root / settings.template_dir
 template_dir.mkdir(parents=True, exist_ok=True)
 app.include_router(doka_router, prefix="/ai_camera")
 app.include_router(doka_app_router)
+app.include_router(admin_router)
 app.mount("/static", StaticFiles(directory=str(backend_root / "static")), name="static")
+
+web_root = backend_root / "web"
+web_root.mkdir(parents=True, exist_ok=True)
+app.mount("/assets", StaticFiles(directory=str(web_root / "assets")), name="web-assets")
+if (web_root / "h5").exists():
+    app.mount("/h5", StaticFiles(directory=str(web_root / "h5"), html=True), name="h5")
+if (web_root / "admin").exists():
+    app.mount("/admin", StaticFiles(directory=str(web_root / "admin"), html=True), name="admin")
+
+
+@app.get("/", include_in_schema=False)
+async def landing():
+    page = web_root / "index.html"
+    if page.exists():
+        return FileResponse(page)
+    return RedirectResponse(url="/h5/")
 
 counters = CounterStore(
     daily_limit=settings.deep_analysis_daily_limit,
@@ -75,7 +95,7 @@ async def health() -> HealthResponse:
         ok=True,
         service=settings.app_name,
         ai_configured=bool(settings.ai_api_key),
-        version="0.2.0",
+        version=store.get_setting("app_version", "0.4.4"),
     )
 
 
@@ -146,9 +166,19 @@ async def scan(
     timestamp/comp_scene/recommend_mode/language/region/distribution. The
     response is wrapped in `{code,message,data:<CameraData>}`.
     """
+    if store.get_setting("maintenance", "0") == "1":
+        raise HTTPException(status_code=503, detail="PRIME 正在维护，请稍后再试")
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="空图片")
+    store.log_event(
+        "scan",
+        {
+            "scene": str(shoot_type or direction or comp_scene),
+            "bytes": len(raw),
+            "device": x_device_id or (request.client.host if request.client else ""),
+        },
+    )
     if len(raw) > settings.max_image_bytes:
         raise HTTPException(status_code=413, detail="图片过大")
 
@@ -175,7 +205,7 @@ async def scan(
         template_dir,
         salt=f"{comp_scene}|{compose_times}|{metrics.brightness}",
     )
-    base = str(request.base_url).rstrip("/")
+    base = str(store.get_setting("public_base_url", str(request.base_url)) or request.base_url).rstrip("/")
     clean_url = f"{base}/static/templates/{Path(clean_path).name}"
     annotated_url = f"{base}/static/templates/{Path(annotated_path).name}"
 
@@ -273,8 +303,8 @@ async def doka_scan(request: Request, authorization: str | None = Header(default
 async def persona(payload: PersonaRequest) -> PersonaResponse:
     line, source = await persona_line(payload.model_dump(), settings)
     return PersonaResponse(
-        name=PERSONA_NAME,
-        role=PERSONA_ROLE,
+        name=store.get_setting("persona_name", PERSONA_NAME),
+        role=store.get_setting("persona_role", PERSONA_ROLE),
         line=line,
         source=source,
     )

@@ -7,8 +7,21 @@ from typing import Any
 import httpx
 
 from .config import Settings
-from .persona import SYSTEM_PROMPT, local_line
+from .persona import SYSTEM_PROMPT, local_line, system_prompt
 from .schemas import ComposeRequest
+
+
+def _live_prompt() -> str:
+    try:
+        from . import store
+
+        return system_prompt(
+            store.get_setting("persona_name", ""),
+            store.get_setting("persona_role", ""),
+            store.get_setting("ai_prompt", ""),
+        )
+    except Exception:
+        return SYSTEM_PROMPT
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -103,7 +116,7 @@ async def analyze_with_model(
         "local_reasons": fallback.get("reasons"),
     }
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _live_prompt()},
         {
             "role": "user",
             "content": (
@@ -129,7 +142,7 @@ async def persona_line(payload: dict[str, Any], settings: Settings) -> tuple[str
     content = await _chat(
         settings,
         [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _live_prompt()},
             {
                 "role": "user",
                 "content": (

@@ -1,0 +1,21 @@
+[Unit]
+Description=PRIME camera API + H5 + admin (uosar.yosar.cloud)
+After=network.target
+
+[Service]
+Type=simple
+User=prime
+Group=prime
+WorkingDirectory=/opt/prime/backend
+EnvironmentFile=/etc/prime/prime.env
+ExecStart=/opt/prime/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8791 --workers 2
+Restart=always
+RestartSec=4
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/prime/backend
+
+[Install]
+WantedBy=multi-user.target

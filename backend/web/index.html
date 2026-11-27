@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>PRIME · 把手机当成一台有摄影指导的相机</title>
+<meta name="description" content="PRIME 是 Doka 式 AI 构图相机：实时识别主体、给出目标环与距离，拍完直接出胶片。">
+<link rel="canonical" href="https://uosar.yosar.cloud/">
+<meta property="og:title" content="PRIME · AI 构图相机">
+<meta property="og:description" content="先看主体，再给动作。流小萤在取景器里教你拍。">
+<meta property="og:image" content="https://uosar.yosar.cloud/assets/scene.jpg">
+<link rel="icon" href="/assets/icon.png">
+<link rel="stylesheet" href="/assets/landing.css">
+</head>
+<body>
+<div class="grain"></div>
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="brand-mark">P</span>
+    <span><b>PRIME</b><small>AI COMPOSITION CAMERA</small></span>
+  </a>
+  <nav class="nav-links">
+    <a href="#ai">AI 构图</a>
+    <a href="#film">胶片</a>
+    <a href="#pro">Pro</a>
+    <a class="nav-cta" href="/h5/">打开 H5 相机</a>
+  </nav>
+</header>
+
+<main>
+<section class="hero">
+  <div class="hero-copy">
+    <div class="eyebrow"><span class="dot"></span> Doka 1.3.20 全量研究 · 自有品牌重构</div>
+    <h1>把手机当成<br><em>有摄影指导</em>的相机。</h1>
+    <p class="lede">不是拍完再修。取景时，流小萤会先看主体、给目标环、报距离；你只需要把画面放进去，按下快门。</p>
+    <div class="hero-actions">
+      <a class="btn primary" href="/h5/">进入 H5 相机 <span>↗</span></a>
+      <a class="btn ghost" href="#film">看 27 款胶片</a>
+    </div>
+    <div class="hero-stats">
+      <div><strong>3:4</strong><span>Doka 取景比例</span></div>
+      <div><strong>27</strong><span>胶片色彩</span></div>
+      <div><strong>0.4s</strong><span>对齐确认</span></div>
+    </div>
+  </div>
+
+  <div class="hero-phone" aria-label="PRIME 相机界面预览">
+    <div class="phone-shell">
+      <div class="phone-top"><span>AI 构图 · 流小萤</span><i></i><b>设置</b></div>
+      <div class="phone-preview" style="background-image:url('/assets/scene.jpg')">
+        <div class="grid"><i></i><i></i><i></i><i></i></div>
+        <div class="subject-box"><span>主体</span></div>
+        <div class="target-ring"><b></b></div>
+        <div class="distance-card"><strong>1.7m</strong><span>距离刚好 · 上半身 3:4</span></div>
+        <div class="hint-card"><img src="/assets/liuxiaoying.png" alt="流小萤"><div><b>流小萤</b><p>再往右半步，让肩线落在右三分。</p></div></div>
+        <div class="zoom"><span>.5</span><span class="on">1x</span><span>2</span><span>5</span></div>
+      </div>
+      <div class="phone-bottom">
+        <div class="film-chip"><span class="swatch"></span>Doka S100</div>
+        <div class="shutter"><i></i></div>
+        <div class="ai-chip">AI 构图</div>
+      </div>
+      <div class="phone-tabs"><span class="on">拍摄</span><span>相册</span><span>我的</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="ai" class="section">
+  <div class="section-head">
+    <div><span class="kicker">01 / AI COMPOSITION</span><h2>不是滤镜，是取景时就给答案。</h2></div>
+    <p>Doka 把当前帧上传 scan 服务，服务端返回子区域、模板和理由；PRIME 用同一套 `CameraData` 契约，端侧再做跟踪与绘制。</p>
+  </div>
+  <div class="steps">
+    <article><span>01</span><h3>识别主体</h3><p>端侧 Vision 先框出人物或显著物体；没有识别到时，服务端用肤色/边缘做兜底。</p><div class="mini-ui"><div class="mini-box"></div></div></article>
+    <article><span>02</span><h3>给出目标环</h3><p>`SubAreaRectNorm` 变成渐变框，黄色主体框和彩色目标环同时出现；偏离时告诉你往哪走。</p><div class="mini-ui"><div class="mini-ring"></div></div></article>
+    <article><span>03</span><h3>对齐再按快门</h3><p>双环重合后停留 0.4 秒，画面变绿；这时按下快门，构图已经稳了。</p><div class="mini-ui"><div class="mini-green"></div></div></article>
+  </div>
+</section>
+
+<section id="film" class="section film">
+  <div class="section-head">
+    <div><span class="kicker">02 / FILM STOCK</span><h2>27 款胶片，预览和成片是同一组色彩。</h2></div>
+    <p>取景用 ColorFilter 矩阵做近似，成片用 CoreImage 按同一组 id 再渲染。不是给照片套一层随机滤镜。</p>
+  </div>
+  <div class="film-grid">
+    <div class="film-card f1"><span>Doka S50</span><small>高曝光 · 冷白</small></div>
+    <div class="film-card f2"><span>Doka S400</span><small>浓郁暖褐</small></div>
+    <div class="film-card f3"><span>Classic Chrome</span><small>褪色纪实</small></div>
+    <div class="film-card f4"><span>Portra 400</span><small>暖肤色</small></div>
+    <div class="film-card f5"><span>Gold 200</span><small>金色暖阳</small></div>
+    <div class="film-card f6"><span>APX 100</span><small>硬朗黑白</small></div>
+  </div>
+  <div class="film-note"><span>原片</span><span>Doka</span><span>F 系列</span><span>Kodak</span><span>Agfa</span><span>黑白</span><b>PRO 可解锁</b></div>
+</section>
+
+<section class="section features">
+  <div class="section-head">
+    <div><span class="kicker">03 / END TO END</span><h2>从取景到相册，不是一张孤零零的照片。</h2></div>
+  </div>
+  <div class="feature-grid">
+    <article><b>实况照片</b><p>Live Photo 记录快门前后的动态，保存到系统相簿。</p></article>
+    <article><b>相册</b><p>按日期分组、多选、删除、分享和导入。</p></article>
+    <article><b>编辑</b><p>裁切、旋转、翻转、换胶片、加边框和水印。</p></article>
+    <article><b>Pro</b><p>全部胶片、AI 次数与无水印导出；兑换码可开通。</p></article>
+  </div>
+</section>
+
+<section id="pro" class="section pro">
+  <div class="pro-copy">
+    <span class="kicker">04 / PRO</span>
+    <h2>先拍好，<br>再决定要不要更多。</h2>
+    <p>免费版保留 AI 构图、基础胶片和 5 次 AI 分析；Pro 解锁全部胶片、不限次构图和无水印导出。</p>
+    <a class="btn primary" href="/h5/#mine">在 H5 里开通 <span>↗</span></a>
+  </div>
+  <div class="pro-card">
+    <span class="pro-badge">PRIME PRO</span>
+    <h3>全部胶片 · 不限次 AI</h3>
+    <div class="price"><strong>¥18</strong><span>/ 月</span></div>
+    <ul><li>27 款胶片全解锁</li><li>AI 构图不限次</li><li>无水印原图导出</li><li>多景别方案</li></ul>
+    <a href="/h5/#mine">用兑换码开通</a>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div><b>PRIME</b><span>AI 构图相机 · Doka 1.3.20 研究项目</span></div>
+  <div><a href="/h5/">H5 相机</a><a href="/admin/">管理后台</a><a href="https://uosar.yosar.cloud">uosar.yosar.cloud</a></div>
+</footer>
+<script>
+document.querySelectorAll('a[href^="#"]').forEach(a=>a.addEventListener('click',e=>{const t=document.querySelector(a.getAttribute('href'));if(t){e.preventDefault();t.scrollIntoView({behavior:'smooth'})}}));
+</script>
+</body>
+</html>

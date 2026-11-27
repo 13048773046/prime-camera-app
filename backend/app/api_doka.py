@@ -53,9 +53,9 @@ def profile(user) -> dict:
         "is_vip": vip,
         "vip_type": "pro" if vip else "",
         "vip_expire_at": user["vip_expire_at"] or "",
-        "remaining_free_count": 5 if not vip else 9999,
-        "remaining_compose_count": 5 if not vip else 9999,
-        "remaining_filter_count": 5 if not vip else 9999,
+        "remaining_free_count": int(store.get_setting("free_ai_count", "5")) if not vip else int(store.get_setting("pro_ai_count", "9999")),
+        "remaining_compose_count": int(store.get_setting("free_ai_count", "5")) if not vip else int(store.get_setting("pro_ai_count", "9999")),
+        "remaining_filter_count": int(store.get_setting("free_ai_count", "5")) if not vip else int(store.get_setting("pro_ai_count", "9999")),
     }
 
 
@@ -342,16 +342,18 @@ async def redeem_vip_code(req: RedeemReq, user=Depends(current_user)):
 async def doka_config():
     return ok(
         {
-            "globalEnabled": True,
+            "globalEnabled": store.get_setting("global_enabled", "1") == "1",
             "securityBlockInstallerRisk": False,
             "securityBlockProxyRisk": False,
             "showAliyunOnFirstAICompose": False,
             "showCompleteCopywriting": True,
-            "showRedeemCodeEntry": True,
+            "showRedeemCodeEntry": store.get_setting("show_redeem_entry", "1") == "1",
             "wechatAccountManagementEnabled": True,
             "wechatLoginEnabled": True,
             "wechatPhoneBindEnabled": True,
             "wechatVipBindPhoneRequired": False,
+            "maintenance": store.get_setting("maintenance", "0") == "1",
+            "announcement": store.get_setting("announcement", ""),
         }
     )
 
@@ -360,12 +362,12 @@ async def doka_config():
 async def doka_version():
     return ok(
         {
-            "versionCode": "9",
-            "versionName": "0.3.9",
-            "updateType": "none",
-            "updateDesc": "",
-            "appAddress": "",
-            "h5UrlAddress": "",
+            "versionCode": store.get_setting("app_version", "0.4.4").replace(".", ""),
+            "versionName": store.get_setting("app_version", "0.4.4"),
+            "updateType": "none" if not store.get_setting("download_url", "") else "force",
+            "updateDesc": store.get_setting("announcement", ""),
+            "appAddress": store.get_setting("download_url", ""),
+            "h5UrlAddress": store.get_setting("public_base_url", store.PUBLIC_BASE_URL) + "/h5/",
         }
     )
 

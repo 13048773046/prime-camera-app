@@ -73,7 +73,7 @@ class ScanPlan {
 /// 未配置时保持纯端侧模式，IPA 不依赖任何外部服务。
 class ScanApi {
   ScanApi({String? baseUrl})
-    : baseUrl = baseUrl ?? const String.fromEnvironment('PRIME_API_BASE');
+    : baseUrl = baseUrl ?? const String.fromEnvironment('PRIME_API_BASE', defaultValue: 'https://uosar.yosar.cloud');
 
   final String baseUrl;
 

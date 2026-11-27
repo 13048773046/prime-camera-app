@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#050506">
+<title>PRIME · AI 构图相机</title>
+<link rel="canonical" href="https://uosar.yosar.cloud/h5/">
+<link rel="icon" href="/assets/icon.png">
+<link rel="stylesheet" href="/h5/h5.css">
+</head>
+<body>
+<div class="app" id="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">P</span><b>PRIME</b><small>AI CAMERA</small></div>
+    <div class="top-actions">
+      <button class="pill-btn" id="autoAiBtn" title="自动 AI 构图"><span class="live-dot"></span>AI 自动</button>
+      <button class="icon-btn" id="settingsBtn" aria-label="设置">⚙</button>
+    </div>
+  </header>
+
+  <main class="view active" id="view-camera">
+    <section class="stage-wrap">
+      <div class="preview" id="preview">
+        <video id="video" autoplay playsinline muted></video>
+        <div class="fallback" id="fallback" style="background-image:url('/assets/scene.jpg')"></div>
+        <div class="grid" id="grid"><i></i><i></i><i></i><i></i></div>
+        <div class="subject-box" id="subjectBox"><label>主体</label></div>
+        <div class="target-box" id="targetBox"></div>
+        <div class="focus-ring" id="focusRing"></div>
+        <div class="distance-card" id="distanceCard"><strong>--</strong><span>等待 AI 构图</span></div>
+        <div class="ai-line" id="aiLine"><img src="/assets/liuxiaoying.png" alt="流小萤"><div><b>流小萤</b><p>点一下“AI 构图”，我先看主体。</p></div></div>
+        <div class="top-chip"><span class="live-dot"></span><span id="sceneLabel">自动场景</span><b id="ratioLabel">3:4</b></div>
+        <div class="zoom-bar" id="zoomBar">
+          <span data-zoom="0.5">.5</span><span class="on" data-zoom="1">1x</span><span data-zoom="2">2</span><span data-zoom="5">5</span>
+        </div>
+      </div>
+      <div class="stage-meta">
+        <span id="cameraState">正在打开相机…</span>
+        <button class="text-btn" id="flipBtn">翻转</button>
+        <button class="text-btn" id="uploadBtn">导入</button>
+        <input type="file" id="uploadInput" accept="image/*" hidden>
+      </div>
+    </section>
+
+    <section class="film-strip" id="filmStrip"></section>
+
+    <section class="capture-row">
+      <button class="round-btn filter-btn" id="filterBtn"><span class="swatch" id="currentSwatch"></span><small>胶片</small></button>
+      <button class="shutter" id="shutterBtn" aria-label="快门"><i></i></button>
+      <button class="round-btn ai-btn" id="aiBtn"><span>AI</span><small>构图</small></button>
+    </section>
+    <div class="under-capture"><span id="filterName">原片</span><span>·</span><span id="tipText">轻点主体对焦，长按锁定</span></div>
+  </main>
+
+  <main class="view" id="view-gallery">
+    <div class="view-head"><div><h1>相册</h1><p id="galleryCount">0 张照片</p></div><button class="text-btn" id="clearGallery">清空</button></div>
+    <div class="gallery-grid" id="galleryGrid"></div>
+    <div class="empty" id="galleryEmpty"><img src="/assets/liuxiaoying.png" alt=""><b>还没有照片</b><p>回到拍摄，按下快门；照片会留在这台设备里。</p><button class="btn primary" id="toCameraFromEmpty">去拍摄</button></div>
+  </main>
+
+  <main class="view" id="view-mine">
+    <div class="view-head"><div><h1>我的</h1><p>账号与 Pro</p></div></div>
+    <section class="account-card" id="accountCard">
+      <img src="/assets/liuxiaoying.png" alt="">
+      <div><b id="accountName">未登录</b><p id="accountSub">登录后同步 Pro 与 AI 次数</p></div>
+      <button class="mini-btn" id="loginBtn">登录</button>
+    </section>
+    <section class="pro-card-h5" id="proCard">
+      <span class="pro-tag">PRIME PRO</span>
+      <h2>全部胶片 · 不限次 AI</h2>
+      <p id="proStatus">未开通 · 免费 AI 5 次</p>
+      <div class="pro-actions"><button class="btn primary small" id="buyBtn">查看套餐</button><button class="btn ghost small" id="redeemBtn">兑换码</button></div>
+    </section>
+    <section class="list-card">
+      <button class="list-row" id="settingsRow"><span>拍摄设置</span><span>›</span></button>
+      <button class="list-row" id="guideRow"><span>使用引导</span><span>5 步</span></button>
+      <button class="list-row" id="aboutRow"><span>关于 PRIME</span><span>v0.4.4</span></button>
+    </section>
+    <div class="h5-footer">uosar.yosar.cloud · H5 相机</div>
+  </main>
+
+  <nav class="tabbar">
+    <button class="tab active" data-view="camera"><span>◉</span>拍摄</button>
+    <button class="tab" data-view="gallery"><span>▦</span>相册</button>
+    <button class="tab" data-view="mine"><span>◎</span>我的</button>
+  </nav>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="sheet-mask" id="sheetMask"></div>
+<div class="sheet" id="settingsSheet">
+  <div class="sheet-grip"></div>
+  <h2>拍摄设置</h2><button class="sheet-close" data-close="settingsSheet">×</button>
+  <div class="setting-row"><div><b>构图网格</b><small>三分线，帮你对齐</small></div><input type="checkbox" id="setGrid"></div>
+  <div class="setting-row"><div><b>自拍镜像</b><small>保存前置看到的方向</small></div><input type="checkbox" id="setMirror"></div>
+  <div class="setting-row"><div><b>时间水印</b><small>成片右下角保留时间</small></div><input type="checkbox" id="setWatermark"></div>
+  <div class="setting-row"><div><b>自动 AI 构图</b><small>每 2.2 秒扫描当前帧</small></div><input type="checkbox" id="setAutoAi"></div>
+  <div class="setting-row"><div><b>场景</b><small>影响 AI 构图口令</small></div><select id="setScene"><option value="portrait">人像</option><option value="landscape">风景</option><option value="still">静物</option><option value="general">通用</option></select></div>
+  <div class="sheet-note">H5 端只保存本地照片；关闭页面不会丢，换设备不同步。</div>
+</div>
+
+<div class="sheet" id="filterSheet">
+  <div class="sheet-grip"></div>
+  <h2>胶片库</h2><button class="sheet-close" data-close="filterSheet">×</button>
+  <div class="filter-cats" id="filterCats"></div>
+  <div class="filter-grid" id="filterGrid"></div>
+</div>
+
+<div class="sheet" id="loginSheet">
+  <div class="sheet-grip"></div>
+  <h2>登录 PRIME</h2><button class="sheet-close" data-close="loginSheet">×</button>
+  <p class="sheet-lede">手机号验证码登录；未配置后端时会自动使用本地体验码 123456。</p>
+  <input class="field" id="loginPhone" inputmode="tel" placeholder="手机号">
+  <div class="code-row"><input class="field" id="loginCode" inputmode="numeric" placeholder="验证码"><button class="text-btn" id="sendCodeBtn">获取验证码</button></div>
+  <div class="form-hint" id="loginHint"></div>
+  <button class="btn primary wide" id="doLoginBtn">登录 / 注册</button>
+  <div class="sheet-note">后端：<span id="loginApiBase">同源</span> · 管理员入口 <a href="/admin/">/admin/</a></div>
+</div>
+
+<div class="sheet" id="proSheet">
+  <div class="sheet-grip"></div>
+  <h2>PRIME Pro</h2><button class="sheet-close" data-close="proSheet">×</button>
+  <div id="productList" class="product-list"></div>
+  <div class="sheet-note">H5 演示支付：创建订单后可本地确认；真实微信/Google 支付需要商户资质。</div>
+</div>
+
+<div class="sheet" id="redeemSheet">
+  <div class="sheet-grip"></div>
+  <h2>兑换 Pro</h2><button class="sheet-close" data-close="redeemSheet">×</button>
+  <input class="field" id="redeemCode" placeholder="PRIME2026 / PRIME-XXXXXXXX">
+  <div class="form-hint" id="redeemHint"></div>
+  <button class="btn primary wide" id="doRedeemBtn">兑换</button>
+</div>
+
+<div class="photo-modal" id="photoModal">
+  <button class="photo-close" id="photoClose">×</button>
+  <img id="photoBig" alt="">
+  <div class="photo-actions"><button class="btn ghost small" id="photoShare">分享</button><button class="btn ghost small" id="photoDelete">删除</button><button class="btn primary small" id="photoDownload">保存</button></div>
+</div>
+
+<script src="/h5/h5.js"></script>
+</body>
+</html>

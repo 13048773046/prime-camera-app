@@ -11,6 +11,27 @@ SYSTEM_PROMPT = """你是流小萤，一位日系动漫风格的 AI 构图导演
 字段：hint（不超过 16 个汉字，直接可执行）、reasons（最多两条，每条不超过 18 个汉字）、confidence（0-1）。"""
 
 
+def system_prompt(name: str = "", role: str = "", extra: str = "") -> str:
+    """Build the live persona prompt from the admin settings.
+
+    The default text is kept as the safety net; `extra` is the operator-edited
+    prompt body, with `{name}` / `{role}` placeholders expanded.
+    """
+    live_name = (name or PERSONA_NAME).strip()[:20]
+    live_role = (role or PERSONA_ROLE).strip()[:20]
+    body = (extra or SYSTEM_PROMPT).strip()
+    body = body.replace("{name}", live_name).replace("{role}", live_role)
+    if live_name != PERSONA_NAME or live_role != PERSONA_ROLE:
+        body = body.replace(PERSONA_NAME, live_name).replace(PERSONA_ROLE, live_role)
+    if "只输出 JSON" not in body:
+        body += (
+            "\n只输出 JSON，不要 Markdown 或代码块。"
+            "字段：hint（不超过 16 个汉字，直接可执行）、"
+            "reasons（最多两条，每条不超过 18 个汉字）、confidence（0-1）。"
+        )
+    return body
+
+
 def _distance_hint(subject_height: float, target_height: float) -> str:
     if subject_height <= 0.01:
         return "先把主体完整放进画面"

@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 /// 未配置时保持本地体验账号，不把手机号发到任何地方。
 class DokaApi {
   DokaApi({String? baseUrl})
-    : baseUrl = baseUrl ?? const String.fromEnvironment('PRIME_API_BASE');
+    : baseUrl = baseUrl ?? const String.fromEnvironment('PRIME_API_BASE', defaultValue: 'https://uosar.yosar.cloud');
 
   static final DokaApi instance = DokaApi();
 

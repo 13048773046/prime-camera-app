@@ -1,6 +1,6 @@
 # 定焦 PRIME
 
-AI 构图相机 App 的前后端工程。v0.4.4 在 Doka 1.3.20 全量反编译（185 layout / 415 业务 Java）基础上，补齐了 24 款胶片滤镜、完整设置页、实况照片/对焦/曝光/水平仪/主体锁定、相册日期分组与多选删除/导入、照片编辑（裁切/旋转/翻转/边框/水印）、账号与 Pro/兑换页面，以及一组与 Doka `ApiService` 同构的账号、VIP、支付、配置后端接口。AI 人格为“流小萤”，头像使用用户提供的日系动漫素材。
+AI 构图相机 App 的前后端工程。v0.4.5 在 Doka 1.3.20 全量反编译（185 layout / 415 业务 Java）基础上，补齐了 27 款胶片滤镜、完整设置页、实况照片/对焦/曝光/水平仪/主体锁定、相册日期分组与多选删除/导入、照片编辑（裁切/旋转/翻转/边框/水印）、账号与 Pro/兑换页面，以及一组与 Doka `ApiService` 同构的账号、VIP、支付、配置后端接口。AI 人格为“流小萤”，头像使用用户提供的日系动漫素材。
 
 完整迁移矩阵见 `analysis/doka/FULL_FEATURE_MAP.md`；接口逆推见 `backend/DOKA_INFERENCE.md`。
 
@@ -10,7 +10,7 @@ AI 构图相机 App 的前后端工程。v0.4.4 在 Doka 1.3.20 全量反编译�
 lib/
   main.dart          App 入口与主题
   pages/             相机、设置、相册、编辑、成片、我的
-  data/filters.dart  Doka 胶片滤镜库（24 款 + 分类 + Pro 标记）
+  data/filters.dart  Doka 胶片滤镜库（27 款 + 分类 + Pro 标记）
   widgets/           AR 目标环
   services/          相机原生通道、scan、设置、照片归档
 backend/
@@ -23,9 +23,15 @@ backend/
     doka.py          Doka 式 scan 几何/模板生成
     persona.py       流小萤人设与本地文案
     rate_limit.py    深度指挥计次与去重
-    store.py         SQLite 用户/验证码/VIP/订单
+    store.py         SQLite 用户/验证码/VIP/订单/兑换码/设置/审计
     api_doka.py      Doka auth / vip / pay / config 同构接口
+    api_admin.py     管理台 API（admin token）
+  web/
+    index.html       落地页（https://uosar.yosar.cloud/）
+    h5/              H5 相机（/h5/）
+    admin/           管理台（/admin/）
   tests/             pytest 接口测试
+deploy/              uosar.yosar.cloud 的 systemd + Nginx 配置
 ```
 
 ## 本地启动
@@ -92,6 +98,20 @@ Doka `POST ai_camera/v2` 的同构入口；字段与 `/v1/scan` 完全一致，�
 
 Doka `ai_camera/v2` 同构的 multipart 接口，返回 `{code,message,data}`，其中 `data` 为 `CameraData`（含 `SubAreaRectNorm`、`PredictSubAreaPicURL`、`ComposeReason` 等）。详见 `backend/DOKA_INFERENCE.md`。
 
+### 管理台
+
+- 管理台：`https://uosar.yosar.cloud/admin/`
+- 默认管理员：`玉玲`；默认密码 `prime-admin-2026`。生产必须用 `PRIME_ADMIN_PASSWORD` 覆盖。
+- 管理 API：`/admin/api/login`、`overview`、`users`、`orders`、`redeem-codes`、`settings`、`persona`、`filters`、`usage`、`events`
+- 所有写操作都会写入 `events` 审计；管理 token 有效期 7 天。
+- 头像、人格名、System Prompt、免费/Pro AI 次数、公告、维护模式、App 版本、下载地址、水印样式都可在管理台修改。
+
+### H5
+
+- `https://uosar.yosar.cloud/h5/`：移动端 3:4 取景、AI 构图（上传当前帧到 `/ai_camera/v2` 并绘制 `SubAreaRectNorm`）、27 款胶片、相册、登录/兑换/Pro 演示。
+- H5 默认使用同源 `location.origin`，域名部署后无需再写死 API 地址。
+- 浏览器无相机权限时自动用 `assets/scene.jpg` 做演示帧，方便审核与预览。
+
 ### POST /v1/persona/line
 
 用流小萤的口吻把结构化构图 brief 变成一句可执行口令；配置 `AI_API_KEY` 时走 DeepSeek `deepseek-chat`，否则本地文案。
@@ -132,3 +152,4 @@ Doka `ai_camera/v2` 同构的 multipart 接口，返回 `{code,message,data}`，
 - 服务端不持久化上传帧；scan 模板会在 `backend/static/templates` 短期缓存并自动清理。
 - DeepSeek 只接收结构化 brief，不接收图片；几何与主体框由端侧 Vision / 服务端轻量规则完成。
 - 模型不可用、超时或返回低置信度结果时自动回退本地规则。
+- 生产部署见 `deploy/README.md`：先签发 `uosar.yosar.cloud` 证书，再把 Nginx 反代到 `127.0.0.1:8791`。当前域名已解析，但证书必须重新签发，否则 HTTPS 会报域名不匹配。

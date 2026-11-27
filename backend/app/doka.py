@@ -20,6 +20,7 @@ class FrameMetrics:
     skin_ratio: float
     skin_box: list[float] | None
     edge_center: tuple[float, float]
+    face_box: list[float] | None = None
 
 
 def _quantile(values: list[int], q: float) -> int:
@@ -38,27 +39,61 @@ def _skin_mask_box(image: Image.Image) -> tuple[float, list[float] | None]:
     """
     small = image.convert("RGB").resize((64, 85))
     pixels = small.load()
-    xs: list[int] = []
-    ys: list[int] = []
-    total = small.width * small.height
-    for y in range(small.height):
-        for x in range(small.width):
+    w, h = small.size
+    total = w * h
+    mask = bytearray(total)
+    count = 0
+    for y in range(h):
+        for x in range(w):
             r, g, b = pixels[x, y]
             cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b
             cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b
             if 72 <= cb <= 133 and 132 <= cr <= 178 and r > 45:
-                xs.append(x)
-                ys.append(y)
-    if total == 0 or len(xs) / total < 0.025:
-        return len(xs) / max(total, 1), None
-    x0 = _quantile(xs, 0.03) / small.width
-    x1 = (_quantile(xs, 0.97) + 1) / small.width
-    y0 = _quantile(ys, 0.03) / small.height
-    y1 = (_quantile(ys, 0.97) + 1) / small.height
-    box = [x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0)]
-    if box[2] < 0.05 or box[3] < 0.05:
-        return len(xs) / total, None
-    return len(xs) / total, [round(v, 4) for v in box]
+                mask[y * w + x] = 1
+                count += 1
+    ratio = count / max(total, 1)
+    if ratio < 0.025:
+        return ratio, None
+
+    # 最大连通域。整面米色墙也会落进肤色阈值，但它会连成一大块；
+    # 用连通域尺寸过滤掉这种“假皮肤”，比直接取 3%/97% 分位稳得多。
+    best = None  # (area, x0, y0, x1, y1)
+    visited = bytearray(total)
+    for y in range(h):
+        for x in range(w):
+            idx = y * w + x
+            if not mask[idx] or visited[idx]:
+                continue
+            stack = [(x, y)]
+            visited[idx] = 1
+            area = 0
+            x0 = x1 = x
+            y0 = y1 = y
+            while stack:
+                cx, cy = stack.pop()
+                area += 1
+                x0 = min(x0, cx)
+                x1 = max(x1, cx)
+                y0 = min(y0, cy)
+                y1 = max(y1, cy)
+                for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                    if 0 <= nx < w and 0 <= ny < h:
+                        ni = ny * w + nx
+                        if mask[ni] and not visited[ni]:
+                            visited[ni] = 1
+                            stack.append((nx, ny))
+            if area >= 28 and (best is None or area > best[0]):
+                best = (area, x0, y0, x1, y1)
+
+    if best is None:
+        return ratio, None
+    _, x0, y0, x1, y1 = best
+    bw = (x1 - x0 + 1) / w
+    bh = (y1 - y0 + 1) / h
+    # 单人肤色区域不会占满画面。过大的连通域是墙/地板，交给边缘兜底。
+    if bw > 0.55 or bh > 0.92 or bw < 0.04 or bh < 0.04:
+        return ratio, None
+    return ratio, [round(x0 / w, 4), round(y0 / h, 4), round(bw, 4), round(bh, 4)]
 
 
 def _edge_center(image: Image.Image) -> tuple[float, float]:
@@ -126,12 +161,22 @@ def _valid_box(box: list[float]) -> list[float] | None:
     return [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]
 
 
-def _best_subject_box(metrics: FrameMetrics, subject_box: list[float] | None) -> tuple[list[float], str]:
+def _best_subject_box(
+    metrics: FrameMetrics,
+    subject_box: list[float] | None,
+    scene: str = "general",
+    subject_kind: str = "person",
+) -> tuple[list[float], str]:
     if subject_box:
         return subject_box, "client"
+    if metrics.face_box:
+        return metrics.face_box, "face"
     if metrics.skin_box:
         return metrics.skin_box, "skin"
-    # For a scene, use the busiest cell and a generous crop.
+    # 人像没有可靠肤色框时，不要相信画面里最“忙”的建筑边缘；
+    # 用一个偏上、居中的半身框作为兜底，再把目标环留给几何规划。
+    if scene == "portrait" or subject_kind == "person":
+        return [0.28, 0.18, 0.44, 0.62], "center"
     cx, cy = metrics.edge_center
     return _valid_box([cx - 0.28, cy - 0.3, 0.56, 0.58]) or [0.2, 0.2, 0.6, 0.6], "edge"
 
@@ -145,7 +190,7 @@ def make_plan(
     zoom: float,
     aspect: float = 0.75,
 ) -> dict:
-    box, box_source = _best_subject_box(metrics, subject_box)
+    box, box_source = _best_subject_box(metrics, subject_box, scene, subject_kind)
     subject_h = box[3]
     subject_w = box[2]
 
