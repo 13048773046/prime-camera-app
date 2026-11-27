@@ -65,53 +65,67 @@ class CameraService {
     if (_forceDemo) {
       return const CameraInitResult(status: CameraStatus.demo, message: '演示取景');
     }
-    try {
-      final result = await _channel.invokeMapMethod<String, dynamic>(
-        'initialize',
-      );
-      final status = result?['status']?.toString() ?? 'unavailable';
-      final id = (result?['textureId'] as num?)?.toInt();
-      _ultraWide = result?['ultraWide'] == true;
-      switch (status) {
-        case 'ready':
-          _initialized = true;
-          _textureId = id;
-          return CameraInitResult(
-            status: CameraStatus.ready,
-            textureId: id,
-            ultraWide: _ultraWide,
-          );
-        case 'denied':
+    // 原生 host 在 implicit engine 初始化时才注册 channel。Dart 的
+    // 第一帧可能比 host 早几毫秒，这里短暂重试，避免第一次
+    // MissingPluginException 后永久落到演示图（取景不动、0.5×无反应）。
+    for (var attempt = 0; attempt < 6; attempt++) {
+      try {
+        final result = await _channel.invokeMapMethod<String, dynamic>(
+          'initialize',
+        );
+        final status = result?['status']?.toString() ?? 'unavailable';
+        final id = (result?['textureId'] as num?)?.toInt();
+        _ultraWide = result?['ultraWide'] == true;
+        switch (status) {
+          case 'ready':
+            _initialized = true;
+            _textureId = id;
+            return CameraInitResult(
+              status: CameraStatus.ready,
+              textureId: id,
+              ultraWide: _ultraWide,
+            );
+          case 'denied':
+            return const CameraInitResult(
+              status: CameraStatus.permissionDenied,
+              message: '相机权限未开启',
+            );
+          case 'restricted':
+            return const CameraInitResult(
+              status: CameraStatus.permissionDenied,
+              message: '系统限制了相机访问',
+            );
+          case 'demo':
+            return CameraInitResult(
+              status: CameraStatus.demo,
+              textureId: id,
+              ultraWide: true,
+            );
+          default:
+            return CameraInitResult(
+              status: CameraStatus.unavailable,
+              message: result?['message']?.toString() ?? '相机暂不可用',
+            );
+        }
+      } on MissingPluginException {
+        if (attempt == 5) {
           return const CameraInitResult(
-            status: CameraStatus.permissionDenied,
-            message: '相机权限未开启',
-          );
-        case 'restricted':
-          return const CameraInitResult(
-            status: CameraStatus.permissionDenied,
-            message: '系统限制了相机访问',
-          );
-        case 'demo':
-          return CameraInitResult(
-            status: CameraStatus.demo,
-            textureId: id,
-            ultraWide: true,
-          );
-        default:
-          return CameraInitResult(
             status: CameraStatus.unavailable,
-            message: result?['message']?.toString() ?? '相机暂不可用',
+            message: '原生相机内核未连接',
           );
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+      } on PlatformException catch (error) {
+        return CameraInitResult(
+          status: CameraStatus.unavailable,
+          message: error.message ?? '相机初始化失败',
+        );
       }
-    } on MissingPluginException {
-      // Web / 编辑器预览：没有原生内核，走演示画面。
-      return const CameraInitResult(status: CameraStatus.demo, message: '演示取景');
-    } on PlatformException catch (error) {
-      return CameraInitResult(
-        status: CameraStatus.unavailable,
-        message: error.message ?? '相机初始化失败',
-      );
     }
+    return const CameraInitResult(
+      status: CameraStatus.unavailable,
+      message: '原生相机内核未连接',
+    );
   }
 
   Future<bool> requestPermission() async {
