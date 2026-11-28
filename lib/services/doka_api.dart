@@ -118,6 +118,26 @@ class DokaApi {
     }, token: token);
   }
 
+  Future<Map<String, dynamic>?> appConfig() {
+    return _post('/app/config_doka', const {});
+  }
+
+  Future<Map<String, dynamic>?> appVersion() {
+    return _post('/app/version_doka_android', const {});
+  }
+
+  Future<Map<String, dynamic>?> securityReport({
+    bool installerRisk = false,
+    bool proxyRisk = false,
+    Map<String, dynamic> detail = const {},
+  }) {
+    return _post('/app/security/report', {
+      'installer_risk': installerRisk,
+      'proxy_risk': proxyRisk,
+      'detail': detail,
+    });
+  }
+
   Future<Map<String, dynamic>?> vipProducts() async {
     if (!enabled) return null;
     try {

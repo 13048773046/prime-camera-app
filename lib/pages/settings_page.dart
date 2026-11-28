@@ -262,6 +262,10 @@ class _SettingsPageState extends State<SettingsPage> {
             _divider(),
             _navRow('使用引导', '5 步了解 PRIME 的拍法', () => _showGuide(context)),
             _divider(),
+            _navRow('检查更新', '从服务端读取版本与更新说明', () => _openUpdate(context)),
+            _divider(),
+            _navRow('安全中心', '代理/越狱风险与安全事件上报', () => _openSecurity(context)),
+            _divider(),
             _navRow('问题诊断', '检查相机权限、网络与 AI 服务状态', () => _diagnose(context)),
             _divider(),
             _navRow('帮助与反馈', '邮件、抖音、小红书三个入口', () => _feedback(context)),
@@ -438,8 +442,8 @@ class _SettingsPageState extends State<SettingsPage> {
   };
 
   String get _watermarkLabel => switch (_prefs.watermarkStyle) {
-    'dated' => '日期水印',
-    'brand' => 'PRIME 品牌',
+    'vintageOrange' => '复古橙字',
+    'camera' => '相机参数',
     'none' => '无水印',
     _ => '简约白字',
   };
@@ -479,8 +483,8 @@ class _SettingsPageState extends State<SettingsPage> {
         selected: _prefs.watermarkStyle,
         styles: const [
           ('simpleWhite', '简约白字', 'PRIME · 拍摄时间'),
-          ('dated', '日期水印', '只显示日期与时间'),
-          ('brand', 'PRIME 品牌', '更大的 PRIME 标志'),
+          ('vintageOrange', '复古橙字', '橙色复古排版，像胶片日期背印'),
+          ('camera', '相机参数', 'PRIME · 焦距 / 光圈'),
           ('none', '无水印', '不添加任何文字'),
         ],
         onSelect: (style) {
@@ -492,6 +496,18 @@ class _SettingsPageState extends State<SettingsPage> {
           Navigator.of(sheet).pop();
         },
       ),
+    );
+  }
+
+  void _openUpdate(BuildContext context) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const UpdatePage()),
+    );
+  }
+
+  void _openSecurity(BuildContext context) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const SecurityPage()),
     );
   }
 

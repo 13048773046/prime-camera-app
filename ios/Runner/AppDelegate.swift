@@ -1354,12 +1354,12 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       let brandText: String
       let fontSize: CGFloat
       switch watermarkStyle {
-      case "dated":
-        brandText = date
-        fontSize = 10
-      case "brand":
-        brandText = "PRIME"
-        fontSize = 15
+      case "vintageOrange":
+        brandText = "PRIME  ·  \(date)"
+        fontSize = 9
+      case "camera":
+        brandText = "PRIME  ·  26mm  ·  f/1.8"
+        fontSize = 8
       default:
         brandText = "PRIME  ·  \(date)"
         fontSize = isMagazine ? 11 : 8
@@ -1367,9 +1367,11 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       let text = brandText as NSString
       let attrs: [NSAttributedString.Key: Any] = [
         .font: UIFont.systemFont(ofSize: fontSize, weight: .semibold),
-        .foregroundColor: isWhite
-          ? UIColor.black.withAlphaComponent(0.55)
-          : UIColor.white.withAlphaComponent(0.72),
+        .foregroundColor: watermarkStyle == "vintageOrange"
+          ? UIColor(red: 1.0, green: 0.54, blue: 0.24, alpha: 0.92)
+          : (isWhite
+            ? UIColor.black.withAlphaComponent(0.55)
+            : UIColor.white.withAlphaComponent(0.72)),
         .kern: 1.2,
       ]
       let textSize = text.size(withAttributes: attrs)

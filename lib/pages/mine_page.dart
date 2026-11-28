@@ -5,6 +5,7 @@ import '../services/doka_api.dart';
 import '../services/prime_session.dart';
 import '../services/camera_service.dart';
 import '../theme.dart';
+import '../services/app_config.dart';
 import 'settings_page.dart';
 import 'account_page.dart';
 
@@ -435,6 +436,12 @@ class _MinePageState extends State<MinePage> {
   }
 
   void _openRedeem() {
+    if (!AppConfig.instance.showRedeemCodeEntry) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('兑换码入口暂未开放')),
+      );
+      return;
+    }
     showDialog<void>(
       context: context,
       builder: (_) => _RedeemDialog(onChanged: () => setState(() {})),

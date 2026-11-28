@@ -146,24 +146,9 @@ class AboutPage extends StatelessWidget {
   );
 
   Widget _link(BuildContext context, String title, String content) => GestureDetector(
-    onTap: () => showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: PrimeColor.surfaceLift,
-      isScrollControlled: true,
-      builder: (_) => Padding(
-        padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(context).viewInsets.bottom),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(title, style: const TextStyle(fontSize: 18, color: PrimeColor.white, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 14),
-              Text(content, style: const TextStyle(fontSize: 12, height: 1.8, color: PrimeColor.white54)),
-              const SizedBox(height: 18),
-            ],
-          ),
-        ),
+    onTap: () => Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => WebContentPage(title: title, body: content),
       ),
     ),
     child: Container(
@@ -292,6 +277,206 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           const Text(
             '如遇黑屏：先在系统设置允许 PRIME 使用相机，再重启 App；仍失败请在“帮助与反馈”里附上机型与系统版本。',
             style: TextStyle(fontSize: 10, height: 1.7, color: PrimeColor.white24),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class UpdatePage extends StatefulWidget {
+  const UpdatePage({super.key});
+
+  @override
+  State<UpdatePage> createState() => _UpdatePageState();
+}
+
+class _UpdatePageState extends State<UpdatePage> {
+  bool _loading = true;
+  Map<String, dynamic>? _data;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    final data = await DokaApi.instance.appVersion();
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _data = data;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final version = _data?['versionName']?.toString() ?? '0.6.0';
+    final type = _data?['updateType']?.toString() ?? 'none';
+    final desc = _data?['updateDesc']?.toString() ?? '';
+    final url = _data?['appAddress']?.toString() ?? '';
+    return Scaffold(
+      backgroundColor: PrimeColor.black,
+      appBar: AppBar(
+        backgroundColor: PrimeColor.black,
+        title: const Text('检查更新'),
+        actions: [
+          TextButton(
+            onPressed: _loading ? null : _check,
+            child: const Text('重新检查'),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(22, 24, 22, 24),
+        children: [
+          const Icon(Icons.system_update_alt_rounded, size: 54, color: Color(0xFF7ECFC8)),
+          const SizedBox(height: 18),
+          const Center(
+            child: Text(
+              'PRIME 0.6.0',
+              style: TextStyle(fontSize: 22, color: PrimeColor.white, fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Center(
+            child: Text(
+              _loading ? '正在检查...' : (type == 'none' ? '已是最新版本' : '发现新版本 $version'),
+              style: const TextStyle(fontSize: 12, color: PrimeColor.white38),
+            ),
+          ),
+          if (desc.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: PrimeColor.surfaceLift,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(desc, style: const TextStyle(fontSize: 12, height: 1.7, color: PrimeColor.white54)),
+            ),
+          ],
+          if (url.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            SelectableText(
+              '下载地址\n$url',
+              style: const TextStyle(fontSize: 11, height: 1.6, color: PrimeColor.white38),
+            ),
+          ],
+          const SizedBox(height: 20),
+          Text(
+            _data == null ? '当前网络不可用，稍后重试。' : '更新检查使用 /app/version_doka_android，与 Doka 的版本接口同构。',
+            style: const TextStyle(fontSize: 10, height: 1.6, color: PrimeColor.white24),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class SecurityPage extends StatefulWidget {
+  const SecurityPage({super.key});
+
+  @override
+  State<SecurityPage> createState() => _SecurityPageState();
+}
+
+class _SecurityPageState extends State<SecurityPage> {
+  bool _busy = false;
+  String _message = '尚未上报安全事件';
+
+  Future<void> _report() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final data = await DokaApi.instance.securityReport(
+      detail: {'source': 'settings', 'platform': 'ios'},
+    );
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _message = data == null ? '上报失败，请检查网络' : '安全事件已上报（仅含风险标记，不含照片或账号）';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: PrimeColor.black,
+      appBar: AppBar(
+        backgroundColor: PrimeColor.black,
+        title: const Text('安全中心'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(22, 20, 22, 24),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: PrimeColor.surfaceLift,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: PrimeColor.white06),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.verified_user_outlined, color: Color(0xFF7ECFC8), size: 24),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    '未检测到代理注入或越狱风险。若启动时发现风险，会进入安全拦截页并暂停相机 5 秒。',
+                    style: TextStyle(fontSize: 11, height: 1.7, color: PrimeColor.white54),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          Text(_message, style: const TextStyle(fontSize: 11, color: PrimeColor.white38)),
+          const SizedBox(height: 10),
+          OutlinedButton(
+            onPressed: _busy ? null : _report,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: PrimeColor.white70,
+              side: const BorderSide(color: PrimeColor.white12),
+            ),
+            child: Text(_busy ? '上报中' : '上报安全事件'),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'PRIME 不采集通讯录、相册原图、位置轨迹或设备唯一标识。相机权限只用于取景与拍摄。',
+            style: TextStyle(fontSize: 10, height: 1.7, color: PrimeColor.white24),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class WebContentPage extends StatelessWidget {
+  const WebContentPage({super.key, required this.title, required this.body});
+
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: PrimeColor.black,
+      appBar: AppBar(
+        backgroundColor: PrimeColor.black,
+        title: Text(title),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(22, 18, 22, 36),
+        children: [
+          SelectableText(
+            body,
+            style: const TextStyle(fontSize: 12, height: 1.9, color: PrimeColor.white54),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            '本页由 PRIME 原生渲染；正式环境可由 $title 的远程 WebView 地址替换。',
+            style: const TextStyle(fontSize: 10, height: 1.7, color: PrimeColor.white24),
           ),
         ],
       ),

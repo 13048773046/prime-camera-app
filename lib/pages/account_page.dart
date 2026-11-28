@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/app_config.dart';
 import '../services/camera_prefs.dart';
 import '../services/doka_api.dart';
 import '../services/prime_session.dart';
@@ -374,17 +375,19 @@ class _AccountPageState extends State<AccountPage> {
       ),
       const SizedBox(height: 14),
       _primary('手机号登录 / 注册', _login),
-      const SizedBox(height: 8),
-      OutlinedButton.icon(
-        onPressed: _busy ? null : _wechatLogin,
-        icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
-        label: const Text('微信登录'),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: PrimeColor.white70,
-          side: const BorderSide(color: PrimeColor.white12),
-          minimumSize: const Size(double.infinity, 46),
+      if (AppConfig.instance.wechatLoginEnabled) ...[
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _busy ? null : _wechatLogin,
+          icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
+          label: const Text('微信登录'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: PrimeColor.white70,
+            side: const BorderSide(color: PrimeColor.white12),
+            minimumSize: const Size(double.infinity, 46),
+          ),
         ),
-      ),
+      ],
     ]);
   }
 
@@ -524,7 +527,7 @@ class _AccountPageState extends State<AccountPage> {
               onPressed: _busy ? null : _unbindWechat,
               child: const Text('解绑', style: TextStyle(fontSize: 10)),
             ),
-          ] else
+          ] else if (AppConfig.instance.wechatPhoneBindEnabled)
             TextButton(
               onPressed: _busy ? null : _bindWechat,
               child: const Text(

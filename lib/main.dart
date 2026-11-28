@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'pages/camera_page.dart';
+import 'services/app_config.dart';
 import 'services/camera_prefs.dart';
 import 'services/guidance.dart';
 import 'theme.dart';
@@ -10,6 +11,8 @@ import 'theme.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await CameraPrefs.instance.load();
+  // 远程配置异步拉取，不阻塞首帧；失败则保持本地默认。
+  AppConfig.instance.load();
   await SystemChrome.setPreferredOrientations(const [
     DeviceOrientation.portraitUp,
   ]);

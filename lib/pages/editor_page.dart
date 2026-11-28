@@ -149,15 +149,17 @@ class _EditorPageState extends State<EditorPage> {
                             bottom: 8,
                             child: Text(
                               switch (_watermarkStyle) {
-                                'dated' =>
-                                  '${DateTime.now().month}/${DateTime.now().day}',
-                                'brand' => 'PRIME',
+                                'camera' => 'PRIME · 26mm · f/1.8',
+                                'vintageOrange' =>
+                                  'PRIME  ·  ${DateTime.now().month}/${DateTime.now().day}',
                                 _ =>
                                   'PRIME  ·  ${DateTime.now().month}/${DateTime.now().day}',
                               },
                               style: TextStyle(
-                                fontSize: _watermarkStyle == 'brand' ? 12 : 8,
-                                color: Colors.white70,
+                                fontSize: _watermarkStyle == 'camera' ? 8 : 8,
+                                color: _watermarkStyle == 'vintageOrange'
+                                    ? const Color(0xFFFF8A3D)
+                                    : Colors.white70,
                                 letterSpacing: 1.2,
                               ),
                             ),
@@ -335,8 +337,8 @@ class _EditorPageState extends State<EditorPage> {
                 for (final item in const [
                   ('none', '无水印'),
                   ('simpleWhite', '简约白字'),
-                  ('dated', '日期水印'),
-                  ('brand', 'PRIME 品牌'),
+                  ('vintageOrange', '复古橙字'),
+                  ('camera', '相机参数'),
                 ])
                   GestureDetector(
                     onTap: () {
