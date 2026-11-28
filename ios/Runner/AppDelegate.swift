@@ -33,6 +33,8 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private let videoOutput = AVCaptureVideoDataOutput()
   private let photoOutput = AVCapturePhotoOutput()
   private var photoPicker: PrimePhotoPicker?
+  /// 多次快门复用同一个 CIContext，避免每张都重新编译 Metal kernel 和缓存。
+  private let ciContext = CIContext(options: nil)
 
   // 实时构图：Vision 以 ~6fps 找人脸/人体，CoreMotion 读取手机水平角。
   private let visionLock = NSLock()
@@ -507,7 +509,12 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       )
     }
     session.addOutput(photoOutput)
-    photoOutput.isLivePhotoCaptureEnabled = photoOutput.isLivePhotoCaptureSupported
+    // 关闭高分辨率静态拍摄：48MP 解码 + CIImage 滤镜会在快门上产生
+    // 数百 MB 峰值内存，容易被 iOS jetsam 直接杀进程。12MP 足够交付。
+    photoOutput.isHighResolutionCaptureEnabled = false
+    photoOutput.isLivePhotoCaptureEnabled =
+      photoOutput.isLivePhotoCaptureSupported &&
+      photoOutput.connection(with: .video)?.isLivePhotoCaptureSupported == true
     updatePhotoOutputCapabilities(for: device, position: position)
 
     isConfigured = true
@@ -517,25 +524,15 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     didCommit = true
   }
 
-  /// 超广角和前置通常不支持高分辨率静态照片；在超广角上强行打开会让
-  /// 0.5× 拍照偶发失败，这里按设备能力收窄，保证快门始终能出片。
+  /// 统一关闭高分辨率静态拍摄，保证每次快门都走稳定的 12MP 路径。
   private func updatePhotoOutputCapabilities(
     for device: AVCaptureDevice,
     position: AVCaptureDevice.Position
   ) {
-    let highResolution: Bool
-    if position == .back {
-      switch device.deviceType {
-      case .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera,
-           .builtInWideAngleCamera:
-        highResolution = true
-      default:
-        highResolution = false
-      }
-    } else {
-      highResolution = false
-    }
-    photoOutput.isHighResolutionCaptureEnabled = highResolution
+    // 固定 12MP 输出，避免 48MP 成片在快门回调里解码/滤镜时内存爆掉。
+    _ = device
+    _ = position
+    photoOutput.isHighResolutionCaptureEnabled = false
   }
 
   private func applyConnectionSettings() {
@@ -1169,7 +1166,9 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
         DispatchQueue.main.async { result(nil) }
         return
       }
-      guard self.photoOutput.connection(with: .video) != nil else {
+      guard self.session.isRunning,
+            let connection = self.photoOutput.connection(with: .video),
+            connection.isEnabled else {
         DispatchQueue.main.async {
           result(FlutterError(code: "capture", message: "相机还没准备好", details: nil))
         }
@@ -1184,16 +1183,31 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       } else {
         settings = AVCapturePhotoSettings()
       }
-      settings.flashMode = (flash && self.currentDevice?.hasFlash == true) ? .on : .off
+      if flash,
+         self.currentDevice?.hasFlash == true,
+         self.photoOutput.supportedFlashModes.contains(.on) {
+        settings.flashMode = .on
+      } else {
+        settings.flashMode = .off
+      }
       var liveMovieURL: URL? = nil
-      if livePhoto && self.photoOutput.isLivePhotoCaptureSupported {
+      if livePhoto &&
+          self.photoOutput.isLivePhotoCaptureEnabled &&
+          self.photoOutput.isLivePhotoCaptureSupported &&
+          connection.isLivePhotoCaptureSupported {
         let movie = FileManager.default.temporaryDirectory
           .appendingPathComponent("prime-live-\(UUID().uuidString).mov")
         settings.livePhotoMovieFileURL = movie
         liveMovieURL = movie
       }
-      settings.photoQualityPrioritization = .quality
-      settings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
+      // 不请求超过 output 上限的优先级；iPhone 默认上限是 .balanced，
+      // 直接写 .quality 会触发 capturePhoto 的 ObjC 异常。
+      let maxQuality = self.photoOutput.maxPhotoQualityPrioritization
+      settings.photoQualityPrioritization =
+        maxQuality.rawValue >= AVCapturePhotoQualityPrioritization.balanced.rawValue
+          ? .balanced
+          : maxQuality
+      settings.isHighResolutionPhotoEnabled = false
 
       let id = settings.uniqueID
       let finish: (Data?, URL?, Error?) -> Void = { [weak self] data, movie, error in
@@ -1257,6 +1271,9 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
           finish(photo?.fileDataRepresentation(), nil, error)
         }
       }
+      // 必须自己持有 delegate：只依赖 output 的临时持有在部分系统版本上
+      // 会在回调前释放，表现为按下快门即闪退/无响应。
+      self.photoDelegates[id] = delegate
       self.photoOutput.capturePhoto(with: settings, delegate: delegate)
     }
   }
@@ -1587,8 +1604,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   }
 
   private func render(_ image: CIImage) -> Data? {
-    let context = CIContext(options: nil)
-    guard let cgImage = context.createCGImage(image, from: image.extent) else {
+    guard let cgImage = ciContext.createCGImage(image, from: image.extent) else {
       return nil
     }
     let ui = UIImage(cgImage: cgImage, scale: 1, orientation: .up)

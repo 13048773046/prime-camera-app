@@ -1043,12 +1043,17 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
     await Future.delayed(const Duration(milliseconds: 80));
     if (!mounted) return;
-    if (path != null && path.isNotEmpty) {
-      _recentPhotos.insert(0, path);
-      if (_filterId != 'none') {
-        CameraPrefs.instance.recordFilterShot(_filterId);
-        if (mounted) setState(() {});
-      }
+    if (path == null || path.isEmpty) {
+      setState(() {
+        _flash = false;
+        _capturing = false;
+      });
+      _showPrompt('拍摄失败', '相机没有返回照片，请重试', 2400);
+      return;
+    }
+    _recentPhotos.insert(0, path);
+    if (_filterId != 'none') {
+      CameraPrefs.instance.recordFilterShot(_filterId);
     }
     setState(() {
       _flash = false;
