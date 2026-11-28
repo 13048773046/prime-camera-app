@@ -6,6 +6,7 @@ import '../services/prime_session.dart';
 import '../services/camera_service.dart';
 import '../theme.dart';
 import 'settings_page.dart';
+import 'account_page.dart';
 
 /// Doka 式「我的」页：账号卡 + 分组设置列表 + 底部三栏。
 /// 账号、Pro、兑换和 AI 次数都走 PRIME 后端，不再用本地假会员。
@@ -417,11 +418,10 @@ class _MinePageState extends State<MinePage> {
   Future<void> _openAccount() async {
     await _refreshProfile();
     if (!mounted) return;
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => _AccountSheet(onChanged: () => setState(() {})),
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => AccountPage(onChanged: () => setState(() {})),
+      ),
     );
   }
 

@@ -236,7 +236,8 @@ class CameraService {
     bool selfieMirror = true,
     bool noiseReduction = true,
     bool watermark = true,
-    String watermarkStyle = 'minimal',
+    String watermarkStyle = 'simpleWhite',
+    String border = 'none',
     double exposure = 0.0,
   }) async {
     try {
@@ -250,6 +251,7 @@ class CameraService {
         'noiseReduction': noiseReduction,
         'watermark': watermark,
         'watermarkStyle': watermarkStyle,
+        'border': border,
         'exposure': exposure,
       });
     } on MissingPluginException {
@@ -265,8 +267,9 @@ class CameraService {
     String ratio = 'threeFour',
     int rotate = 0,
     bool flip = false,
-    String border = 'minimal',
+    String border = 'none',
     bool watermark = true,
+    String watermarkStyle = 'simpleWhite',
   }) async {
     try {
       return await _channel.invokeMethod<String>('editPhoto', {
@@ -277,6 +280,7 @@ class CameraService {
         'flip': flip,
         'border': border,
         'watermark': watermark,
+        'watermarkStyle': watermarkStyle,
       });
     } on MissingPluginException {
       return null;

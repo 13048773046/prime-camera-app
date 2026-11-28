@@ -14,6 +14,10 @@ import '../data/filters.dart';
 import '../services/camera_prefs.dart';
 import 'settings_page.dart';
 import '../theme.dart';
+import '../widgets/filter_detail_sheet.dart';
+import '../widgets/palette_sheet.dart';
+import '../widgets/subject_box_editor.dart';
+import '../widgets/zoom_dial.dart';
 import '../widgets/guide_ring.dart';
 import 'gallery_page.dart';
 import 'mine_page.dart';
@@ -35,20 +39,45 @@ class CameraPage extends StatefulWidget {
   State<CameraPage> createState() => _CameraPageState();
 }
 
-enum CaptureRatio { threeFour, oneOne, sixteenNine }
+enum CaptureRatio {
+  threeFour,
+  fourThree,
+  oneOne,
+  sixteenNine,
+  nineSixteen,
+  twoThree,
+  threeTwo,
+  fourFive,
+  fiveFour,
+  sixtyFiveTwentyFour,
+}
 
 extension CaptureRatioX on CaptureRatio {
   String get label => switch (this) {
     CaptureRatio.threeFour => '3:4',
+    CaptureRatio.fourThree => '4:3',
     CaptureRatio.oneOne => '1:1',
     CaptureRatio.sixteenNine => '16:9',
+    CaptureRatio.nineSixteen => '9:16',
+    CaptureRatio.twoThree => '2:3',
+    CaptureRatio.threeTwo => '3:2',
+    CaptureRatio.fourFive => '4:5',
+    CaptureRatio.fiveFour => '5:4',
+    CaptureRatio.sixtyFiveTwentyFour => '65:24',
   };
 
   /// 预览高 / 宽。
   double get heightOverWidth => switch (this) {
     CaptureRatio.threeFour => 4 / 3,
+    CaptureRatio.fourThree => 3 / 4,
     CaptureRatio.oneOne => 1,
     CaptureRatio.sixteenNine => 9 / 16,
+    CaptureRatio.nineSixteen => 16 / 9,
+    CaptureRatio.twoThree => 3 / 2,
+    CaptureRatio.threeTwo => 2 / 3,
+    CaptureRatio.fourFive => 5 / 4,
+    CaptureRatio.fiveFour => 4 / 5,
+    CaptureRatio.sixtyFiveTwentyFour => 24 / 65,
   };
 }
 
@@ -100,6 +129,12 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   bool _sceneLocked = false;
   CaptureRatio _ratio = CaptureRatio.threeFour;
   int _zoomIndex = 1;
+  double _zoom = 1.0;
+  double _zoomAtScaleStart = 1.0;
+  bool _zoomDialOpen = false;
+  Timer? _zoomDialTimer;
+  Timer? _zoomSendTimer;
+  double? _pendingZoom;
   bool _capturing = false;
   bool _flash = false;
   bool _flashOn = false;
@@ -149,8 +184,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   DateTime? _lastAutoZoomAt;
   bool _autoZoomBusy = false;
 
-  static const List<double> _zoomValues = [0.5, 1.0, 2.0, 5.0];
-  static const List<String> _zoomLabels = ['.5', '1x', '2', '5'];
+  static const List<double> _zoomValues = [0.5, 1.0, 2.0, 5.0, 10.0];
+  static const List<String> _zoomLabels = ['.5', '1x', '2', '5', '10'];
 
   static const List<_ShotPlan> _plans = [
     _ShotPlan(
@@ -282,6 +317,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     _distanceTimer?.cancel();
     _exposureTimer?.cancel();
     _alignConfirmTimer?.cancel();
+    _zoomDialTimer?.cancel();
+    _zoomSendTimer?.cancel();
     super.dispose();
   }
 
@@ -294,6 +331,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   }
 
   _ShotPlan get _activePlan {
+    if (_zoomIndex >= 4) return _currentPlans.last;
     for (final plan in _currentPlans) {
       if (plan.index == _zoomIndex) return plan;
     }
@@ -479,7 +517,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       final plan = await _scanApi.scan(
         jpeg: jpeg,
         scene: _scene.name,
-        zoom: _zoomValues[_zoomIndex],
+        zoom: _zoom,
         tilt: _lastPitch,
         roll: _lastRoll,
         subjectBox: _lockedSubjectBox ?? _guide?.subjectBox,
@@ -488,6 +526,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
           'scenes': CameraPrefs.instance.preferredScenes,
           'series': CameraPrefs.instance.preferredSeries,
         }),
+        aspect: _ratio.label,
       );
       if (!mounted || plan == null) return;
       final rect = plan.cropRect;
@@ -553,7 +592,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     }
     final guide = _composer.compose(
       frame,
-      zoom: _zoomValues[_zoomIndex],
+      zoom: _zoom,
       mode: mode,
       targetCenterX: _activePlan.targetCenterX,
       targetCenterY: _activePlan.targetCenterY,
@@ -631,8 +670,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     if (subjectH < 0.05 || subjectH > 0.98) return;
     final targetH = _activePlan.targetHeight.clamp(0.18, 0.78);
     final ratio = targetH / subjectH;
-    final currentZoom = _zoomValues[_zoomIndex];
-    final desired = (currentZoom * ratio).clamp(0.5, 5.0);
+    final currentZoom = _zoom;
+    final desired = (currentZoom * ratio).clamp(0.5, 10.0);
     var nearest = _nearestZoomIndex(desired);
     if (nearest == 0 && !_ultraWideAvailable) nearest = 1;
     if (nearest == _zoomIndex) return;
@@ -812,20 +851,62 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     final actual = await _camera.switchCamera();
     if (!mounted || actual == null) return;
     final nearest = _nearestZoomIndex(actual);
-    if (nearest != _zoomIndex) setState(() => _zoomIndex = nearest);
+    setState(() {
+      _zoomIndex = nearest;
+      _zoom = actual;
+    });
   }
 
   Future<void> _selectZoom(int index) async {
     if (index == 0 && !_ultraWideAvailable) return;
     _resetDistanceCard();
-    if (_zoomIndex == index) return;
+    if (_zoomIndex == index && (_zoom - _zoomValues[index]).abs() < 0.01) return;
     setState(() => _zoomIndex = index);
     // 先让演示口令立刻跟手，再等原生回报实际可用倍率。
     if (!_live && _status == CameraStatus.demo) _startCommandCycle();
     final actual = await _camera.setZoom(_zoomValues[index]);
-    if (!mounted || actual == null) return;
+    if (!mounted) return;
+    if (actual == null) {
+      setState(() => _zoom = _zoomValues[index]);
+      return;
+    }
     final nearest = _nearestZoomIndex(actual);
-    if (nearest != _zoomIndex) setState(() => _zoomIndex = nearest);
+    setState(() {
+      _zoomIndex = nearest;
+      _zoom = actual;
+    });
+  }
+
+  void _scheduleZoom(double value) {
+    _pendingZoom = value.clamp(0.5, 10.0);
+    _zoomSendTimer?.cancel();
+    _zoomSendTimer = Timer(const Duration(milliseconds: 90), () async {
+      final target = _pendingZoom;
+      if (target == null) return;
+      final actual = await _camera.setZoom(target);
+      if (!mounted) return;
+      setState(() {
+        _zoom = actual ?? target;
+        _zoomIndex = _nearestZoomIndex(_zoom);
+      });
+    });
+  }
+
+  void _onZoomGesture(double next) {
+    final value = next.clamp(_ultraWideAvailable ? 0.5 : 1.0, 10.0);
+    setState(() {
+      _zoom = value;
+      _zoomIndex = _nearestZoomIndex(value);
+    });
+    _scheduleZoom(value);
+  }
+
+  void _openZoomDial() {
+    setState(() => _zoomDialOpen = true);
+    _zoomDialTimer?.cancel();
+    _zoomDialTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _zoomDialOpen = false);
+    });
   }
 
   int _nearestZoomIndex(double actual) {
@@ -846,6 +927,15 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         (_status != CameraStatus.ready && _status != CameraStatus.demo)) {
       return;
     }
+    final activeFilter = filterById(_filterId);
+    if (activeFilter.pro && !CameraPrefs.instance.filterUnlocked(activeFilter)) {
+      _showPrompt(
+        'Pro 滤镜未解锁',
+        '${activeFilter.name} 可试用取景；保存需开通 Pro，或用其他滤镜拍摄 ${activeFilter.unlockShots} 张解锁',
+        2800,
+      );
+      return;
+    }
     setState(() {
       _capturing = true;
       _flash = true;
@@ -863,12 +953,17 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       noiseReduction: CameraPrefs.instance.noiseReduction,
       watermark: CameraPrefs.instance.watermark,
       watermarkStyle: CameraPrefs.instance.watermarkStyle,
+      border: CameraPrefs.instance.borderStyle,
       exposure: _exposure,
     );
     await Future.delayed(const Duration(milliseconds: 80));
     if (!mounted) return;
     if (path != null && path.isNotEmpty) {
       _recentPhotos.insert(0, path);
+      if (_filterId != 'none') {
+        CameraPrefs.instance.recordFilterShot(_filterId);
+        if (mounted) setState(() {});
+      }
     }
     setState(() {
       _flash = false;
@@ -959,19 +1054,47 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       isScrollControlled: true,
       builder: (sheetContext) => _FilterSheet(
         selected: _filterId,
+        recommended: _recommendedFilterId,
+        recommendedName: _recommendedFilterName,
+        displayStyle: CameraPrefs.instance.aiFilterDisplayStyle,
         onSelect: (id, label) {
           Navigator.of(sheetContext).pop();
-          if (id == _filterId) return;
-          if (filterById(id).pro && !CameraPrefs.instance.isPro) {
-            _showPrompt(
-              'Doka Pro 胶片',
-              '$label 需要 Pro；在“我的 → 兑换码”输入 PRIME2026',
-              2600,
-            );
-            return;
-          }
-          setState(() => _filterId = id);
-          _showPrompt('滤镜 · $label', '已套用到取景与下一张照片', 1800);
+          _applyFilterPreset(filterById(id));
+        },
+        onDetail: (filter) => _openFilterDetail(filter),
+      ),
+    );
+  }
+
+  void _applyFilterPreset(FilterPreset filter) {
+    if (filter.id == _filterId) return;
+    final unlocked = CameraPrefs.instance.filterUnlocked(filter);
+    setState(() => _filterId = filter.id);
+    if (filter.pro && !unlocked) {
+      _showPrompt(
+        '试用 · ${filter.name}',
+        '取景可预览；拍摄保存前需要 Pro 或拍摄 ${filter.unlockShots} 张解锁',
+        2600,
+      );
+      return;
+    }
+    _showPrompt('滤镜 · ${filter.name}', '已套用到取景与下一张照片', 1800);
+  }
+
+  void _openFilterDetail(FilterPreset filter) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (detailContext) => FilterDetailSheet(
+        filter: filter,
+        onApply: () {
+          Navigator.of(detailContext).pop();
+          _applyFilterPreset(filter);
+        },
+        onBuyPro: () {
+          Navigator.of(detailContext).pop();
+          _openMine();
         },
       ),
     );
@@ -1144,12 +1267,35 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                               right: 18,
                               child: _buildPromptChip(),
                             ),
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            bottom: 10,
-                            child: _buildFocalPill(),
-                          ),
+                          if (!_zoomDialOpen)
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              bottom: 10,
+                              child: _buildFocalPill(),
+                            ),
+                          if (_zoomDialOpen)
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              bottom: 6,
+                              child: Center(
+                                child: ZoomDial(
+                                  value: _zoom,
+                                  onChanged: (value) {
+                                    _openZoomDial();
+                                    _onZoomGesture(value);
+                                  },
+                                  onPreset: (value) {
+                                    _zoomDialTimer?.cancel();
+                                    _selectZoom(_nearestZoomIndex(value));
+                                    setState(() => _zoomDialOpen = false);
+                                  },
+                                  onClose: () =>
+                                      setState(() => _zoomDialOpen = false),
+                                ),
+                              ),
+                            ),
                           Positioned(
                             right: 12,
                             bottom: 10,
@@ -1364,6 +1510,17 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
               if (mounted) setState(() => _showExposure = false);
             });
           },
+          onScaleStart: (details) {
+            if (details.pointerCount < 2) return;
+            _zoomAtScaleStart = _zoom;
+          },
+          onScaleUpdate: (details) {
+            if (details.pointerCount < 2) return;
+            _onZoomGesture(_zoomAtScaleStart * details.scale);
+          },
+          onScaleEnd: (_) {
+            if (_zoomDialOpen) _openZoomDial();
+          },
           onDoubleTap: () {
             if (_lockedSubjectBox == null) return;
             setState(() => _lockedSubjectBox = null);
@@ -1423,6 +1580,15 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                     painter: _LevelPainter(roll: _lastRoll, pitch: _lastPitch),
                   ),
                 ),
+              if (_lockedSubjectBox != null)
+                Positioned.fill(
+                  child: SubjectBoxEditor(
+                    box: _lockedSubjectBox!,
+                    frameRect: previewRect,
+                    onChanged: (box) => setState(() => _lockedSubjectBox = box),
+                    onClear: () => setState(() => _lockedSubjectBox = null),
+                  ),
+                ),
               if (_showExposure)
                 Positioned(
                   left: 14,
@@ -1453,6 +1619,28 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   FilterPreset get _activeFilter => filterById(_filterId);
 
+  Widget _applyPreviewColor(Widget child) {
+    Widget result = ColorFiltered(
+      colorFilter: _activeFilter.colorFilter,
+      child: child,
+    );
+    final prefs = CameraPrefs.instance;
+    if (!prefs.paletteEnabled) return result;
+    result = ColorFiltered(
+      colorFilter: ColorFilter.mode(
+        prefs.paletteColor.withValues(
+          alpha: 0.10 + prefs.paletteStrength * 0.35,
+        ),
+        BlendMode.softLight,
+      ),
+      child: result,
+    );
+    return ColorFiltered(
+      colorFilter: ColorFilter.matrix(paletteToneMatrix(prefs.paletteTone)),
+      child: result,
+    );
+  }
+
   Widget _buildPreview() {
     switch (_status) {
       case CameraStatus.ready:
@@ -1469,18 +1657,12 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
               ),
             ),
           );
-          return ColorFiltered(
-            colorFilter: _activeFilter.colorFilter,
-            child: texture,
-          );
+          return _applyPreviewColor(texture);
         }
         return const ColoredBox(color: PrimeColor.black);
       case CameraStatus.demo:
         final image = Image.asset('assets/demo/scene.jpg', fit: BoxFit.cover);
-        return ColorFiltered(
-          colorFilter: _activeFilter.colorFilter,
-          child: image,
-        );
+        return _applyPreviewColor(image);
       case CameraStatus.permissionDenied:
       case CameraStatus.unavailable:
         return ColoredBox(
@@ -1575,56 +1757,60 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   }
 
   Widget _buildFocalPill() {
-    return Center(
-      child: Container(
-        height: 38,
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: const Color(0x99000000),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: PrimeColor.white12, width: 0.8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (int i = 0; i < _zoomLabels.length; i++)
-              GestureDetector(
-                key: ValueKey('zoom-$i'),
-                onTap: i == 0 && !_ultraWideAvailable
-                    ? null
-                    : () => _selectZoom(i),
-                behavior: HitTestBehavior.opaque,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  curve: Curves.easeOut,
-                  width: i == _zoomIndex ? 42 : 34,
-                  height: 30,
-                  margin: const EdgeInsets.symmetric(horizontal: 1),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: i == _zoomIndex
-                        ? PrimeColor.white
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  child: Text(
-                    _zoomLabels[i],
-                    style: TextStyle(
-                      fontSize: 11,
-                      height: 1,
-                      letterSpacing: 0.2,
+    return GestureDetector(
+      onLongPress: _openZoomDial,
+      behavior: HitTestBehavior.opaque,
+      child: Center(
+        child: Container(
+          height: 38,
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: const Color(0x99000000),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: PrimeColor.white12, width: 0.8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (int i = 0; i < _zoomLabels.length; i++)
+                GestureDetector(
+                  key: ValueKey('zoom-$i'),
+                  onTap: i == 0 && !_ultraWideAvailable
+                      ? null
+                      : () => _selectZoom(i),
+                  behavior: HitTestBehavior.opaque,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOut,
+                    width: i == _zoomIndex ? 40 : 31,
+                    height: 30,
+                    margin: const EdgeInsets.symmetric(horizontal: 1),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
                       color: i == _zoomIndex
-                          ? PrimeColor.black
-                          : (i == 0 && !_ultraWideAvailable
-                                ? PrimeColor.white24
-                                : PrimeColor.white54),
-                      fontWeight: FontWeight.w600,
-                      fontFeatures: const [FontFeature.tabularFigures()],
+                          ? PrimeColor.white
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: Text(
+                      _zoomLabels[i],
+                      style: TextStyle(
+                        fontSize: 11,
+                        height: 1,
+                        letterSpacing: 0.2,
+                        color: i == _zoomIndex
+                            ? PrimeColor.black
+                            : (i == 0 && !_ultraWideAvailable
+                                  ? PrimeColor.white24
+                                  : PrimeColor.white54),
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
                     ),
                   ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1711,6 +1897,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 children: [
                   _multiComposeOption(),
                   _subjectOption(),
+                  _paletteOption(),
                   _ratioOption(),
                   _flipOption(),
                 ],
@@ -1773,6 +1960,32 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
           color: PrimeColor.white70,
         ),
       ),
+    );
+  }
+
+  Widget _paletteOption() {
+    final active = CameraPrefs.instance.paletteEnabled;
+    return GestureDetector(
+      onTap: _openPalette,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 48,
+        height: 48,
+        child: Icon(
+          Icons.tune_rounded,
+          size: 24,
+          color: active ? const Color(0xFF80EEFF) : PrimeColor.white70,
+        ),
+      ),
+    );
+  }
+
+  void _openPalette() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => PaletteSheet(onChanged: () => setState(() {})),
     );
   }
 
@@ -2635,10 +2848,21 @@ class _ShutterProgressPainter extends CustomPainter {
 
 /// Doka 式滤镜托盘：横向缩略图，选中项用白框和白色文字。
 class _FilterSheet extends StatefulWidget {
-  const _FilterSheet({required this.selected, required this.onSelect});
+  const _FilterSheet({
+    required this.selected,
+    required this.onSelect,
+    required this.onDetail,
+    this.recommended = 'none',
+    this.recommendedName = '',
+    this.displayStyle = 'panel',
+  });
 
   final String selected;
   final void Function(String id, String label) onSelect;
+  final void Function(FilterPreset filter) onDetail;
+  final String recommended;
+  final String recommendedName;
+  final String displayStyle;
 
   @override
   State<_FilterSheet> createState() => _FilterSheetState();
@@ -2698,6 +2922,87 @@ class _FilterSheetState extends State<_FilterSheet> {
               ],
             ),
             const SizedBox(height: 10),
+            if (widget.displayStyle == 'full' &&
+                widget.recommended != 'none' &&
+                widget.recommendedName.isNotEmpty)
+              GestureDetector(
+                onTap: () => widget.onDetail(filterById(widget.recommended)),
+                child: Container(
+                  height: 104,
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    gradient: LinearGradient(
+                      colors: [
+                        const Color(0xFF1B3B42),
+                        const Color(0xFF0E1518).withValues(alpha: 0.9),
+                      ],
+                    ),
+                    border: Border.all(
+                      color: const Color(0xFF7ECFC8).withValues(alpha: 0.4),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 74,
+                        height: 74,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          color: Colors.white10,
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: const Center(
+                          child: Icon(
+                            Icons.auto_awesome,
+                            color: Color(0xFF7ECFC8),
+                            size: 24,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Text(
+                              'AI 推荐',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Color(0xFF7ECFC8),
+                                letterSpacing: 1,
+                              ),
+                            ),
+                            const SizedBox(height: 5),
+                            Text(
+                              widget.recommendedName,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              '点开查看原片 / 滤镜两联样片',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Colors.white38,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(
+                        Icons.chevron_right_rounded,
+                        color: Colors.white38,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             SizedBox(
               height: 30,
               child: ListView(
@@ -2749,6 +3054,7 @@ class _FilterSheetState extends State<_FilterSheet> {
                       setState(() => _selected = filter.id);
                       widget.onSelect(filter.id, filter.name);
                     },
+                    onLongPress: () => widget.onDetail(filter),
                     behavior: HitTestBehavior.opaque,
                     child: SizedBox(
                       width: 72,
@@ -3069,63 +3375,63 @@ class _RatioSheet extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 18),
-              Row(
+              GridView.count(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                crossAxisCount: 5,
+                mainAxisSpacing: 8,
+                crossAxisSpacing: 8,
+                childAspectRatio: 0.78,
                 children: [
-                  for (final ratio in CaptureRatio.values) ...[
-                    Expanded(
-                      child: GestureDetector(
-                        key: ValueKey('ratio-${ratio.name}'),
-                        onTap: () => onSelect(ratio),
-                        behavior: HitTestBehavior.opaque,
-                        child: Container(
-                          height: 100,
-                          decoration: BoxDecoration(
-                            color: PrimeColor.white06,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: ratio == selected
-                                  ? PrimeColor.white70
-                                  : PrimeColor.white12,
-                              width: ratio == selected ? 1.2 : 0.8,
-                            ),
+                  for (final ratio in CaptureRatio.values)
+                    GestureDetector(
+                      key: ValueKey('ratio-${ratio.name}'),
+                      onTap: () => onSelect(ratio),
+                      behavior: HitTestBehavior.opaque,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: PrimeColor.white06,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: ratio == selected
+                                ? PrimeColor.white70
+                                : PrimeColor.white12,
+                            width: ratio == selected ? 1.2 : 0.8,
                           ),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              SizedBox(
-                                width: 38,
-                                height: 38 * ratio.heightOverWidth,
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(3),
-                                    border: Border.all(
-                                      color: PrimeColor.white38,
-                                      width: 0.8,
-                                    ),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            SizedBox(
+                              width: 32,
+                              height: (32 * ratio.heightOverWidth).clamp(18, 48),
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(3),
+                                  border: Border.all(
+                                    color: PrimeColor.white38,
+                                    width: 0.8,
                                   ),
                                 ),
                               ),
-                              const SizedBox(height: 9),
-                              Text(
-                                ratio.label,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: ratio == selected
-                                      ? PrimeColor.white
-                                      : PrimeColor.white54,
-                                  fontWeight: ratio == selected
-                                      ? FontWeight.w600
-                                      : FontWeight.w400,
-                                ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              ratio.label,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: ratio == selected
+                                    ? PrimeColor.white
+                                    : PrimeColor.white54,
+                                fontWeight: ratio == selected
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                    if (ratio != CaptureRatio.values.last)
-                      const SizedBox(width: 10),
-                  ],
                 ],
               ),
             ],

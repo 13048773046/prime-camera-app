@@ -238,7 +238,8 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       let ratio = args?["ratio"] as? String ?? "threeFour"
       let selfieMirror = args?["selfieMirror"] as? Bool ?? true
       let watermark = args?["watermark"] as? Bool ?? true
-      let watermarkStyle = args?["watermarkStyle"] as? String ?? "minimal"
+      let watermarkStyle = args?["watermarkStyle"] as? String ?? "simpleWhite"
+      let border = args?["border"] as? String ?? "none"
       let livePhoto = args?["livePhoto"] as? Bool ?? false
       let saveRaw = args?["saveRaw"] as? Bool ?? false
       takePhoto(
@@ -248,6 +249,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
         selfieMirror: selfieMirror,
         watermark: watermark,
         watermarkStyle: watermarkStyle,
+        border: border,
         livePhoto: livePhoto,
         saveRaw: saveRaw,
         result: result
@@ -268,8 +270,9 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
         ratio: args?["ratio"] as? String ?? "threeFour",
         rotate: args?["rotate"] as? Int ?? 0,
         flip: args?["flip"] as? Bool ?? false,
-        border: args?["border"] as? String ?? "minimal",
+        border: args?["border"] as? String ?? "none",
         watermark: args?["watermark"] as? Bool ?? true,
+        watermarkStyle: args?["watermarkStyle"] as? String ?? "simpleWhite",
         result: result
       )
     case "deletePhoto":
@@ -1083,6 +1086,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     selfieMirror: Bool,
     watermark: Bool,
     watermarkStyle: String,
+    border: String,
     livePhoto: Bool,
     saveRaw: Bool,
     result: @escaping FlutterResult
@@ -1148,9 +1152,13 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
            let ui = UIImage(data: finalData) {
           finalData = self.flipHorizontal(ui).jpegData(compressionQuality: 0.95) ?? finalData
         }
-        if watermark, let ui = UIImage(data: finalData) {
-          finalData = self.decorate(ui, border: watermarkStyle, watermark: true)
-            .jpegData(compressionQuality: 0.95) ?? finalData
+        if watermark || border != "none", let ui = UIImage(data: finalData) {
+          finalData = self.decorate(
+            ui,
+            border: border,
+            watermark: watermark,
+            watermarkStyle: watermarkStyle
+          ).jpegData(compressionQuality: 0.95) ?? finalData
         }
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
           .appendingPathComponent("PRIME", isDirectory: true)
@@ -1188,6 +1196,13 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     switch ratio {
     case "oneOne": target = 1.0
     case "sixteenNine": target = 9.0 / 16.0
+    case "nineSixteen": target = 16.0 / 9.0
+    case "fourThree": target = 3.0 / 4.0
+    case "twoThree": target = 2.0 / 3.0
+    case "threeTwo": target = 3.0 / 2.0
+    case "fourFive": target = 4.0 / 5.0
+    case "fiveFour": target = 5.0 / 4.0
+    case "sixtyFiveTwentyFour": target = 65.0 / 24.0
     default: target = 3.0 / 4.0
     }
     let current = extent.width / extent.height
@@ -1214,6 +1229,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     flip: Bool,
     border: String,
     watermark: Bool,
+    watermarkStyle: String,
     result: @escaping FlutterResult
   ) {
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1236,7 +1252,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       var ui = UIImage(cgImage: cg, scale: 1, orientation: .up)
       ui = self.rotate(ui, quarterTurns: rotate)
       if flip { ui = self.flipHorizontal(ui) }
-      ui = self.decorate(ui, border: border, watermark: watermark)
+      ui = self.decorate(ui, border: border, watermark: watermark, watermarkStyle: watermarkStyle)
       guard let finalData = ui.jpegData(compressionQuality: 0.95) else {
         DispatchQueue.main.async { result(nil) }
         return
@@ -1285,28 +1301,45 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     }
   }
 
-  private func decorate(_ image: UIImage, border: String, watermark: Bool) -> UIImage {
-    let margin: CGFloat = border == "white" ? 26 : (border == "magazine" ? 22 : 0)
-    let bottomExtra: CGFloat = border == "magazine" ? 64 : (border == "film" ? 34 : 0)
-    let size = CGSize(width: image.size.width + margin * 2, height: image.size.height + margin * 2 + bottomExtra)
+  private func decorate(
+    _ image: UIImage,
+    border: String,
+    watermark: Bool,
+    watermarkStyle: String
+  ) -> UIImage {
+    let isWhite = border == "white"
+    let isFilm = border == "film"
+    let isMagazine = border == "magazine"
+    let margin: CGFloat = isWhite ? 26 : (isMagazine ? 22 : 0)
+    let topExtra: CGFloat = isFilm ? 24 : 0
+    let bottomExtra: CGFloat = isMagazine ? 64 : (isFilm ? 34 : 0)
+    let size = CGSize(
+      width: image.size.width + margin * 2,
+      height: image.size.height + margin * 2 + topExtra + bottomExtra
+    )
     let renderer = UIGraphicsImageRenderer(size: size)
     return renderer.image { context in
       let cg = context.cgContext
       switch border {
       case "white":
-        UIColor(white: 0.96, alpha: 1).setFill()
+        UIColor(white: 0.965, alpha: 1).setFill()
       case "film":
-        UIColor(white: 0.06, alpha: 1).setFill()
+        UIColor(white: 0.05, alpha: 1).setFill()
       case "magazine":
-        UIColor(white: 0.08, alpha: 1).setFill()
+        UIColor(white: 0.075, alpha: 1).setFill()
       default:
         UIColor.black.setFill()
       }
       cg.fill(CGRect(origin: .zero, size: size))
-      image.draw(in: CGRect(x: margin, y: margin, width: image.size.width, height: image.size.height))
+      image.draw(in: CGRect(
+        x: margin,
+        y: margin + topExtra,
+        width: image.size.width,
+        height: image.size.height
+      ))
 
-      if border == "film" {
-        UIColor(white: 0.22, alpha: 1).setFill()
+      if isFilm {
+        UIColor(white: 0.24, alpha: 1).setFill()
         let hole: CGFloat = 7
         var x: CGFloat = 8
         while x < size.width - 8 {
@@ -1316,20 +1349,35 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
         }
       }
 
-      if watermark {
-        let text = "PRIME  ·  \(Date().formatted(date: .numeric, time: .shortened))" as NSString
-        let attrs: [NSAttributedString.Key: Any] = [
-          .font: UIFont.systemFont(ofSize: border == "magazine" ? 11 : 8, weight: .semibold),
-          .foregroundColor: border == "white" ? UIColor.black.withAlphaComponent(0.55) : UIColor.white.withAlphaComponent(0.72),
-          .kern: 1.2,
-        ]
-        let textSize = text.size(withAttributes: attrs)
-        let point = CGPoint(
-          x: margin + 8,
-          y: size.height - textSize.height - (border == "magazine" ? 18 : 8)
-        )
-        text.draw(at: point, withAttributes: attrs)
+      guard watermark, watermarkStyle != "none" else { return }
+      let date = Date().formatted(date: .numeric, time: .shortened)
+      let brandText: String
+      let fontSize: CGFloat
+      switch watermarkStyle {
+      case "dated":
+        brandText = date
+        fontSize = 10
+      case "brand":
+        brandText = "PRIME"
+        fontSize = 15
+      default:
+        brandText = "PRIME  ·  \(date)"
+        fontSize = isMagazine ? 11 : 8
       }
+      let text = brandText as NSString
+      let attrs: [NSAttributedString.Key: Any] = [
+        .font: UIFont.systemFont(ofSize: fontSize, weight: .semibold),
+        .foregroundColor: isWhite
+          ? UIColor.black.withAlphaComponent(0.55)
+          : UIColor.white.withAlphaComponent(0.72),
+        .kern: 1.2,
+      ]
+      let textSize = text.size(withAttributes: attrs)
+      let point = CGPoint(
+        x: margin + 8,
+        y: size.height - textSize.height - (isMagazine ? 18 : 8)
+      )
+      text.draw(at: point, withAttributes: attrs)
     }
   }
 
@@ -1401,6 +1449,43 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       return controls(input, saturation: 1.15, contrast: 1.16, brightness: 0.0)
     case "agfa_vista":
       return controls(temp(input, from: 6500, to: 6500), saturation: 1.05, contrast: 1.06, brightness: 0.08)
+    case "f_classic_chrome":
+      return controls(temp(input, from: 6500, to: 6900), saturation: 0.86, contrast: 1.12, brightness: 0.02)
+    case "f_provia":
+      return controls(input, saturation: 1.06, contrast: 1.08, brightness: 0.02)
+    case "f_velvia":
+      return controls(input, saturation: 1.28, contrast: 1.2, brightness: 0.0)
+    case "f_cc":
+      return controls(input, saturation: 1.08, contrast: 1.12, brightness: 0.02)
+    case "f_classic_neg":
+      return controls(temp(input, from: 6500, to: 6750), saturation: 0.98, contrast: 1.1, brightness: 0.02)
+    case "f_cn":
+      return controls(temp(input, from: 6500, to: 6300), saturation: 0.94, contrast: 0.96, brightness: 0.06)
+    case "f_c200":
+      return controls(temp(input, from: 6500, to: 5000), saturation: 1.08, contrast: 1.08, brightness: 0.04)
+    case "f_160c":
+      return controls(temp(input, from: 6500, to: 7000), saturation: 1.10, contrast: 1.02, brightness: 0.03)
+    case "f_pro_neg":
+      return controls(temp(input, from: 6500, to: 5400), saturation: 0.95, contrast: 0.98, brightness: 0.06)
+    case "f_400h":
+      return controls(temp(input, from: 6500, to: 7800), saturation: 0.90, contrast: 0.95, brightness: 0.10)
+    case "f_s100":
+      return controls(input, saturation: 1.0, contrast: 1.02, brightness: 0.03)
+    case "f_s400":
+      return controls(input, saturation: 0.92, contrast: 1.08, brightness: 0.02)
+    case "k_portra160":
+      return controls(temp(input, from: 6500, to: 5400), saturation: 0.95, contrast: 0.96, brightness: 0.08)
+    case "k_gold200":
+      return controls(temp(input, from: 6500, to: 5000), saturation: 1.08, contrast: 1.02, brightness: 0.05)
+    case "k_portra400":
+      return controls(temp(input, from: 6500, to: 5400), saturation: 1.0, contrast: 1.0, brightness: 0.06)
+    case "agfa_vista800":
+      return controls(temp(input, from: 6500, to: 6800), saturation: 1.16, contrast: 1.08, brightness: 0.08)
+    case "doka_x100":
+      return controls(input, saturation: 0.0, contrast: 1.0, brightness: 0.04)
+    case "doka_x400":
+      return input.applyingFilter("CIPhotoEffectNoir")
+        .applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.28])
     default:
       return controls(input, saturation: 1.04, contrast: 1.04, brightness: 0.0)
     }

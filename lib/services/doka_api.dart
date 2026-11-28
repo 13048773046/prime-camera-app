@@ -81,6 +81,37 @@ class DokaApi {
     return _post('/ai_camera/auth/me', const {}, token: token);
   }
 
+  Future<Map<String, dynamic>?> bindPhone(
+    String phone,
+    String code,
+    String token,
+  ) {
+    return _post('/ai_camera/auth/bind_phone', {
+      'phone_num': phone,
+      'msg_code': code,
+    }, token: token);
+  }
+
+  Future<Map<String, dynamic>?> wechatLogin() {
+    return _post('/ai_camera/auth/wechat_login', const {});
+  }
+
+  Future<Map<String, dynamic>?> bindWechat(String token) {
+    return _post('/ai_camera/auth/bind_wechat', const {}, token: token);
+  }
+
+  Future<Map<String, dynamic>?> unbindWechat(String token) {
+    return _post('/ai_camera/auth/unbind_wechat', const {}, token: token);
+  }
+
+  Future<Map<String, dynamic>?> replaceWechat(String token) {
+    return _post('/ai_camera/auth/replace_wechat', const {}, token: token);
+  }
+
+  Future<Map<String, dynamic>?> verifyWechatChange(String token) {
+    return _post('/ai_camera/auth/verify_wechat_change', const {}, token: token);
+  }
+
   Future<Map<String, dynamic>?> redeem(String code, String token) async {
     return _post('/api/v1/redeem_vip_code', {
       'redeem_code': code,

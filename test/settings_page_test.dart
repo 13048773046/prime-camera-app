@@ -23,7 +23,7 @@ void main() {
       'AI 多景别构图',
       'AI 构图停留确认',
       '降噪优化',
-      '水印和边框',
+      '水印样式',
       '问题诊断',
       '关于 PRIME',
     ]) {
@@ -45,6 +45,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('AI 滤镜偏好'), warnIfMissed: false);
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('街拍'));
     await tester.tap(find.text('街拍'));
     await tester.pump();
     await tester.tap(find.text('保存偏好'));

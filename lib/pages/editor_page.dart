@@ -28,7 +28,8 @@ class _EditorPageState extends State<EditorPage> {
   String _ratio = 'threeFour';
   int _rotate = 0;
   bool _flip = false;
-  String _border = 'minimal';
+  String _border = 'none';
+  String _watermarkStyle = 'simpleWhite';
   bool _watermark = true;
   bool _saving = false;
 
@@ -36,7 +37,8 @@ class _EditorPageState extends State<EditorPage> {
   void initState() {
     super.initState();
     _watermark = CameraPrefs.instance.watermark;
-    _border = CameraPrefs.instance.watermarkStyle;
+    _border = CameraPrefs.instance.borderStyle;
+    _watermarkStyle = CameraPrefs.instance.watermarkStyle;
   }
 
   Future<void> _save() async {
@@ -56,6 +58,7 @@ class _EditorPageState extends State<EditorPage> {
       flip: _flip,
       border: _border,
       watermark: _watermark,
+      watermarkStyle: _watermarkStyle,
     );
     if (!mounted) return;
     setState(() => _saving = false);
@@ -127,7 +130,7 @@ class _EditorPageState extends State<EditorPage> {
                             ),
                           ),
                         ),
-                        if (_border != 'minimal')
+                        if (_border != 'none')
                           IgnorePointer(
                             child: Container(
                               decoration: BoxDecoration(
@@ -140,14 +143,20 @@ class _EditorPageState extends State<EditorPage> {
                               ),
                             ),
                           ),
-                        if (_watermark)
+                        if (_watermark && _watermarkStyle != 'none')
                           Positioned(
                             left: 10,
                             bottom: 8,
                             child: Text(
-                              'PRIME  ·  ${DateTime.now().month}/${DateTime.now().day}',
-                              style: const TextStyle(
-                                fontSize: 8,
+                              switch (_watermarkStyle) {
+                                'dated' =>
+                                  '${DateTime.now().month}/${DateTime.now().day}',
+                                'brand' => 'PRIME',
+                                _ =>
+                                  'PRIME  ·  ${DateTime.now().month}/${DateTime.now().day}',
+                              },
+                              style: TextStyle(
+                                fontSize: _watermarkStyle == 'brand' ? 12 : 8,
                                 color: Colors.white70,
                                 letterSpacing: 1.2,
                               ),
@@ -224,7 +233,11 @@ class _EditorPageState extends State<EditorPage> {
               _tool(Icons.rotate_right_rounded, '旋转', () => setState(() => _rotate = (_rotate + 1) % 4)),
               _tool(Icons.flip_rounded, '翻转', () => setState(() => _flip = !_flip)),
               _tool(Icons.border_all_rounded, '边框', _openBorder),
-              _tool(_watermark ? Icons.branding_watermark_rounded : Icons.water_drop_outlined, '水印', () => setState(() => _watermark = !_watermark)),
+              _tool(
+                _watermark ? Icons.branding_watermark_rounded : Icons.water_drop_outlined,
+                '水印',
+                _openWatermark,
+              ),
             ],
           ),
         ],
@@ -293,6 +306,89 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
+  void _openWatermark() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: const BoxDecoration(
+          color: PrimeColor.black,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '水印',
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: PrimeColor.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                for (final item in const [
+                  ('none', '无水印'),
+                  ('simpleWhite', '简约白字'),
+                  ('dated', '日期水印'),
+                  ('brand', 'PRIME 品牌'),
+                ])
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _watermarkStyle = item.$1;
+                        _watermark = item.$1 != 'none';
+                      });
+                      Navigator.pop(context);
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              item.$2,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: PrimeColor.white70,
+                              ),
+                            ),
+                          ),
+                          if (_watermarkStyle == item.$1)
+                            const Icon(
+                              Icons.check_rounded,
+                              size: 18,
+                              color: PrimeColor.white,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                SwitchListTile(
+                  value: _watermark,
+                  onChanged: (value) => setState(() {
+                    _watermark = value;
+                    if (!value) _watermarkStyle = 'none';
+                  }),
+                  title: const Text(
+                    '导出时添加水印',
+                    style: TextStyle(fontSize: 12, color: PrimeColor.white54),
+                  ),
+                  activeThumbColor: const Color(0xFF7ECFC8),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _openBorder() {
     showModalBottomSheet<void>(
       context: context,
@@ -309,7 +405,7 @@ class _EditorPageState extends State<EditorPage> {
               children: [
                 const Text('边框', style: TextStyle(fontSize: 18, color: PrimeColor.white, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 12),
-                for (final item in const [('minimal', '无边框'), ('white', '白边'), ('film', '胶片'), ('magazine', '杂志')])
+                for (final item in const [('none', '无边框'), ('white', '白边'), ('film', '胶片'), ('magazine', '杂志')])
                   GestureDetector(
                     onTap: () {
                       setState(() => _border = item.$1);

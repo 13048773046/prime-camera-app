@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/camera_prefs.dart';
 import '../services/guidance.dart';
 import '../theme.dart';
+import 'support_pages.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key, this.onOpenGuide});
@@ -19,6 +20,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   void _set(VoidCallback fn) {
     setState(fn);
+    CameraPrefs.instance.touch();
     // 让相机页下次 build 时读到同一份设置。
   }
 
@@ -219,6 +221,12 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             _divider(),
             _navRow(
+              'AI 滤镜展示',
+              _prefs.aiFilterDisplayStyle == 'full' ? '沉浸大图' : '底部面板',
+              () => _openAiDisplayStyle(context),
+            ),
+            _divider(),
+            _navRow(
               'AI 构图使用引导',
               '3 条规则：怎么站、怎么等、怎么切换方案',
               () => _showGuide(context),
@@ -243,7 +251,9 @@ class _SettingsPageState extends State<SettingsPage> {
               icon: Icons.branding_watermark_outlined,
             ),
             _divider(),
-            _navRow('水印和边框', '选择无边框、白边、胶片边框或杂志边框', () => _openBorder(context)),
+            _navRow('水印样式', _watermarkLabel, () => _openWatermarkStyle(context)),
+            _divider(),
+            _navRow('照片边框', _borderLabel, () => _openBorder(context)),
           ]),
 
           _section('通用'),
@@ -258,7 +268,7 @@ class _SettingsPageState extends State<SettingsPage> {
             _divider(),
             _navRow(
               '关于 PRIME',
-              '版本 0.5.0 · 隐私政策 · 开源许可',
+              '版本 0.6.0 · 隐私政策 · 开源许可',
               () => _about(context),
             ),
           ]),
@@ -420,14 +430,65 @@ class _SettingsPageState extends State<SettingsPage> {
     ),
   );
 
+  String get _borderLabel => switch (_prefs.borderStyle) {
+    'white' => '白边',
+    'film' => '胶片边框',
+    'magazine' => '杂志边框',
+    _ => '无边框',
+  };
+
+  String get _watermarkLabel => switch (_prefs.watermarkStyle) {
+    'dated' => '日期水印',
+    'brand' => 'PRIME 品牌',
+    'none' => '无水印',
+    _ => '简约白字',
+  };
+
   void _openBorder(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (sheet) => _BorderSheet(
-        selected: _prefs.watermarkStyle,
+        title: '照片边框',
+        subtitle: '边框只影响导出，不改动原始底片。',
+        selected: _prefs.borderStyle,
+        styles: const [
+          ('none', '无边框', '不增加任何留白'),
+          ('white', '白边', '四周留白，像一张冲洗出来的相纸'),
+          ('film', '胶片边框', '黑色片基 + 齿孔'),
+          ('magazine', '杂志边框', '底部大留白与标题排版'),
+        ],
         onSelect: (style) {
-          setState(() => _prefs.watermarkStyle = style);
+          setState(() {
+            _prefs.borderStyle = style;
+            _prefs.touch();
+          });
+          Navigator.of(sheet).pop();
+        },
+      ),
+    );
+  }
+
+  void _openWatermarkStyle(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheet) => _BorderSheet(
+        title: '水印样式',
+        subtitle: '水印与边框相互独立，可分别关闭。',
+        selected: _prefs.watermarkStyle,
+        styles: const [
+          ('simpleWhite', '简约白字', 'PRIME · 拍摄时间'),
+          ('dated', '日期水印', '只显示日期与时间'),
+          ('brand', 'PRIME 品牌', '更大的 PRIME 标志'),
+          ('none', '无水印', '不添加任何文字'),
+        ],
+        onSelect: (style) {
+          setState(() {
+            _prefs.watermarkStyle = style;
+            _prefs.watermark = style != 'none';
+            _prefs.touch();
+          });
           Navigator.of(sheet).pop();
         },
       ),
@@ -435,15 +496,28 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   void _openLanguage(BuildContext context) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const LanguagePage()),
+    );
+  }
+
+  void _openAiDisplayStyle(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (sheet) => _SimpleListSheet(
-        title: '语言',
-        options: const ['简体中文', '繁體中文', 'English', '日本語'],
-        selected: _prefs.language,
-        onSelect: (value) {
-          setState(() => _prefs.language = value);
+      builder: (sheet) => _BorderSheet(
+        title: 'AI 滤镜展示',
+        subtitle: '推荐滤镜在取景页的呈现方式，随时可切换。',
+        selected: _prefs.aiFilterDisplayStyle,
+        styles: const [
+          ('panel', '底部面板', '推荐滤镜缩略图横向排列，不遮挡取景'),
+          ('full', '沉浸大图', '一张大图展示推荐胶片与样片'),
+        ],
+        onSelect: (style) {
+          setState(() {
+            _prefs.aiFilterDisplayStyle = style;
+            _prefs.touch();
+          });
           Navigator.of(sheet).pop();
         },
       ),
@@ -517,29 +591,8 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   void _about(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: PrimeColor.surfaceLift,
-        title: const Text(
-          '关于 PRIME',
-          style: TextStyle(color: PrimeColor.white, fontSize: 16),
-        ),
-        content: const Text(
-          'PRIME 0.5.0\n把手机当成一台有摄影指导的相机。\n\nDoka 1.3.20 前端逻辑研究项目；PRIME 使用自有品牌与素材。',
-          style: TextStyle(
-            color: PrimeColor.white54,
-            fontSize: 12,
-            height: 1.7,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('关闭'),
-          ),
-        ],
-      ),
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const AboutPage()),
     );
   }
 }
@@ -547,19 +600,22 @@ class _SettingsPageState extends State<SettingsPage> {
 void _noop(String _) {}
 
 class _BorderSheet extends StatelessWidget {
-  const _BorderSheet({required this.selected, required this.onSelect});
+  const _BorderSheet({
+    required this.selected,
+    required this.onSelect,
+    required this.styles,
+    this.title = '水印和边框',
+    this.subtitle = '边框只影响导出，不改动原始底片。',
+  });
 
   final String selected;
   final ValueChanged<String> onSelect;
+  final List<(String, String, String)> styles;
+  final String title;
+  final String subtitle;
 
   @override
   Widget build(BuildContext context) {
-    const styles = [
-      ('minimal', '无边框', '只保留极细时间水印'),
-      ('white', '白边', '四周留白，像一张冲洗出来的相纸'),
-      ('film', '胶片边框', '黑色片基 + 齿孔 + 参数'),
-      ('magazine', '杂志边框', '底部大留白与标题排版'),
-    ];
     return Container(
       decoration: const BoxDecoration(
         color: PrimeColor.black,
@@ -573,17 +629,17 @@ class _BorderSheet extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                '水印和边框',
-                style: TextStyle(
+              Text(
+                title,
+                style: const TextStyle(
                   fontSize: 18,
                   color: PrimeColor.white,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(height: 6),
-              const Text(
-                '边框只影响导出，不改动原始底片。',
+              Text(
+                subtitle,
                 style: TextStyle(fontSize: 11, color: PrimeColor.white38),
               ),
               const SizedBox(height: 14),
@@ -774,10 +830,11 @@ class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
       ),
       child: SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 22),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
@@ -803,7 +860,7 @@ class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final scene in ['人像', '街拍', '风景', '静物', '美食', '夜景'])
+                  for (final scene in ['人像', '街拍', '风景', '静物', '美食', '夜景', '室内', '逆光', '旅行', '宠物', '建筑', '海边', '雪山', '日常'])
                     ChoiceChip(
                       label: Text(scene),
                       selected: _scenes.contains(scene),
@@ -868,6 +925,7 @@ class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
               ),
             ],
           ),
+        ),
         ),
       ),
     );

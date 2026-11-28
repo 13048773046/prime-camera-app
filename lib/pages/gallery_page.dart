@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/camera_service.dart';
+import 'editor_page.dart';
 import '../services/photo_source_stub.dart'
     if (dart.library.io) '../services/photo_source_io.dart';
 import '../theme.dart';
@@ -298,6 +299,13 @@ class _GalleryPageState extends State<GalleryPage> {
                           setState(() => _photos.remove(path));
                           Navigator.of(context).pop();
                         },
+                        onEdited: (newPath) {
+                          setState(() {
+                            _photos.remove(path);
+                            _photos.insert(0, newPath);
+                          });
+                          Navigator.of(context).pop();
+                        },
                       ),
                     ),
                   );
@@ -422,11 +430,17 @@ class _GalleryPageState extends State<GalleryPage> {
 }
 
 class _PhotoPreview extends StatelessWidget {
-  const _PhotoPreview({required this.path, this.camera, this.onDeleted});
+  const _PhotoPreview({
+    required this.path,
+    this.camera,
+    this.onDeleted,
+    this.onEdited,
+  });
 
   final String path;
   final CameraService? camera;
   final VoidCallback? onDeleted;
+  final ValueChanged<String>? onEdited;
 
   @override
   Widget build(BuildContext context) {
@@ -455,8 +469,17 @@ class _PhotoPreview extends StatelessWidget {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  _circle(Icons.tune_rounded, () async {
+                    final result = await Navigator.of(context).push<String>(
+                      MaterialPageRoute<String>(
+                        builder: (_) => EditorPage(path: path, camera: camera),
+                      ),
+                    );
+                    if (result != null) onEdited?.call(result);
+                  }, context),
+                  const SizedBox(width: 14),
                   _circle(Icons.ios_share_rounded, () => camera?.shareFiles([path]), context),
-                  const SizedBox(width: 16),
+                  const SizedBox(width: 14),
                   _circle(Icons.delete_outline_rounded, () async {
                     final ok = await showDialog<bool>(
                       context: context,

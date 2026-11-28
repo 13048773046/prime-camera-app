@@ -134,6 +134,15 @@ async def compose(
     return ComposeResponse(**model_result)
 
 
+def _aspect_ratio(label: str) -> float:
+    """把 3:4 / 16:9 等标签换成 width/height。"""
+    try:
+        w, h = label.replace("：", ":").split(":", 1)
+        return max(0.2, min(float(w) / float(h), 5.0))
+    except Exception:
+        return 0.75
+
+
 @app.post("/v1/scan", response_model=ScanEnvelope)
 async def scan(
     request: Request,
@@ -195,8 +204,8 @@ async def scan(
         subject_box=subject,
         subject_kind=subject_kind or "person",
         scene=scene,
-        zoom=max(0.5, min(zoom or scan_focal_length or 1.0, 8.0)),
-        aspect=0.75 if aspect == "3:4" else 0.5625,
+        zoom=max(0.5, min(zoom or scan_focal_length or 1.0, 10.0)),
+        aspect=_aspect_ratio(aspect),
     )
     rect = plan["rect"]
     clean_path, annotated_path = render_templates(

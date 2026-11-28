@@ -28,18 +28,33 @@ class ScanPlan {
   final String filterName;
   final String? templateUrl;
 
-  /// 服务端只回中文滤镜名；沿用 Doka 的命名并映射到本地胶片 id。
+  /// 服务端只回中文/英文滤镜名；映射到 24 款本地胶片 id。
   String get filterId => switch (filterName) {
-        '清透' => 'clear',
-        '暖调' => 'warm',
-        '冷调' => 'cool',
-        '黑白' => 'mono',
-        'Doka S50' => 'doka_s50',
-        'Doka S100' => 'doka_s100',
-        'Doka S400' => 'doka_s400',
-        'Classic Chrome' => 'classic_chrome',
-        'Portra 400' => 'portra400',
-        'Gold 200' => 'kodak_gold',
+        'Doka S50' || 'S50' => 'doka_s50',
+        'Doka S100' || 'S100' => 'doka_s100',
+        'Doka S160' || 'S160' => 'doka_s160',
+        'Doka S200' || 'S200' => 'doka_s200',
+        'Doka S400' || 'S400' => 'doka_s400',
+        'Doka X100' || 'X100' => 'doka_x100',
+        'Doka X400' || 'X400' => 'doka_x400',
+        'Classic Chrome' => 'f_classic_chrome',
+        'PROVIA' || 'Provia' => 'f_provia',
+        'Velvia' => 'f_velvia',
+        'CC' => 'f_cc',
+        'Classic Neg' => 'f_classic_neg',
+        'CN' => 'f_cn',
+        'C200' => 'f_c200',
+        '160C' => 'f_160c',
+        'Pro Neg' => 'f_pro_neg',
+        '400H' => 'f_400h',
+        'F S100' => 'f_s100',
+        'F S400' => 'f_s400',
+        'Portra 160' => 'k_portra160',
+        'Gold 200' => 'k_gold200',
+        'Portra 400' => 'k_portra400',
+        'Vista 800' => 'agfa_vista800',
+        'AP 100' || 'APX 100' => 'agfa_ap100',
+        '清透' || 'Clear' => 'doka_s100',
         _ => 'none',
       };
 
@@ -88,6 +103,7 @@ class ScanApi {
     List<double>? subjectBox,
     String subjectKind = 'person',
     String aiFilterPreferences = '',
+    String aspect = '3:4',
   }) async {
     if (!enabled) return null;
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/+$'), '')}/ai_camera/v2');
@@ -105,7 +121,7 @@ class ScanApi {
       ..fields['region'] = 'CN'
       ..fields['distribution'] = 'store'
       ..fields['subject_kind'] = subjectKind
-      ..fields['aspect'] = '3:4'
+      ..fields['aspect'] = aspect
       ..fields['zoom'] = zoom.toStringAsFixed(2)
       ..fields['tilt'] = tilt.toStringAsFixed(2)
       ..fields['roll'] = roll.toStringAsFixed(2);
