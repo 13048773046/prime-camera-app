@@ -53,6 +53,7 @@ class GuidanceFrame {
     this.box,
     this.face,
     this.saliency,
+    this.subjectKind,
     this.candidates = const [],
     this.action,
     this.actionConfidence = 0,
@@ -70,6 +71,10 @@ class GuidanceFrame {
   /// 非人像场景的显著主体（建筑、树、招牌、静物等）。
   final List<double>? saliency;
 
+  /// `person` / `object`；用于区分“画面里有人”和“只识别到静物”，
+  /// 避免静物主体被误送进人像构图流程。
+  final String? subjectKind;
+
   /// 当前帧里所有人体候选，按原生连续性评分排序；用于手动指定主体后
   /// 在多人画面里换到离用户框最近的一个人，而不是永远跟随最大的人。
   final List<List<double>> candidates;
@@ -82,6 +87,7 @@ class GuidanceFrame {
     List<double>? box,
     List<double>? face,
     List<double>? saliency,
+    String? subjectKind,
     List<List<double>>? candidates,
     String? action,
     double? actionConfidence,
@@ -96,6 +102,7 @@ class GuidanceFrame {
       box: box ?? this.box,
       face: face ?? this.face,
       saliency: saliency ?? this.saliency,
+      subjectKind: subjectKind ?? this.subjectKind,
       candidates: candidates ?? this.candidates,
       action: action ?? this.action,
       actionConfidence: actionConfidence ?? this.actionConfidence,
@@ -147,6 +154,7 @@ class GuidanceFrame {
       box: rect(map['box']),
       face: rect(map['face']),
       saliency: rect(map['saliency']),
+      subjectKind: map['subjectKind']?.toString(),
       candidates: rects(map['candidates']),
       action: map['action']?.toString(),
       actionConfidence: (map['actionConfidence'] as num? ?? 0).toDouble(),

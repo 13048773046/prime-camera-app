@@ -137,6 +137,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   double? _pendingZoom;
   bool _capturing = false;
   bool _flashOn = false;
+  String? _subjectKind;
   bool _ultraWideAvailable = true;
   bool _gridOn = false;
   bool _planSheetOpen = false;
@@ -529,7 +530,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         tilt: _lastPitch,
         roll: _lastRoll,
         subjectBox: _subjectBoxForServer(),
-        subjectKind: _scene == SceneMode.portrait ? 'person' : 'object',
+        subjectKind:
+            _subjectKind ??
+            (_scene == SceneMode.portrait ? 'person' : 'object'),
         aiFilterPreferences: jsonEncode({
           'scenes': CameraPrefs.instance.preferredScenes,
           'series': CameraPrefs.instance.preferredSeries,
@@ -587,6 +590,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   /// 避免同一帧里换人、或 5–6fps 的人体框带着目标环抖动。
   GuidanceFrame _stableGuidance(GuidanceFrame raw) {
     var box = raw.box;
+    // 非人场景没有人体框时，直接把原生重选后的显著物体当作主体，
+    // 否则静物/商品/花草永远只能拿到一个 targetBox，主体框不会跟物体走。
+    if (box == null && raw.saliency != null && raw.saliency!.length == 4) {
+      box = raw.saliency;
+    }
     final locked = _lockedSubjectBox;
     final lockedFull = locked == null ? null : _previewToFullBox(locked);
     if (lockedFull != null) {
@@ -656,6 +664,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   void _onGuidanceFrame(GuidanceFrame rawFrame) {
     if (!mounted || !_live || !_composeEnabled) return;
     final frame = _stableGuidance(rawFrame);
+    _subjectKind = frame.subjectKind;
     _lastFrameTs = math.max(_lastFrameTs, frame.ts);
     _lastRoll = frame.roll;
     _lastPitch = frame.pitch;
@@ -666,10 +675,13 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     // 只有显著物就继续用通用/风景构图。这样用户不需要先选一个胶囊。
     var mode = _scene;
     if (!_sceneLocked) {
-      if (frame.box != null || frame.face != null) {
+      if (frame.subjectKind == 'person' || frame.face != null) {
         mode = SceneMode.portrait;
-      } else if (frame.saliency != null && frame.saliency![2] > 0.42) {
-        mode = SceneMode.landscape;
+      } else if (frame.subjectKind == 'object' || frame.saliency != null) {
+        // 静物/商品默认走通用中心构图；只有显著区域非常宽才按风景处理。
+        mode = (frame.saliency != null && frame.saliency![2] > 0.52)
+            ? SceneMode.landscape
+            : SceneMode.general;
       } else {
         mode = SceneMode.general;
       }

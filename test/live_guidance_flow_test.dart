@@ -94,4 +94,83 @@ void main() {
     final secondCenterX = second.subjectBox[0] + second.subjectBox[2] / 2;
     expect(secondCenterX, lessThan(firstCenterX - 0.05));
   });
+
+  testWidgets('静物场景没有人体框时，saliency 成为主体并跟随移动', (tester) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const channel = MethodChannel('prime/camera_still_test');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'initialize' || call.method == 'requestPermission') {
+        return <String, dynamic>{
+          'status': 'ready',
+          'textureId': 101,
+          'zoom': 1.0,
+        };
+      }
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CameraPage(
+          camera: CameraService(channel: channel),
+          initialScene: SceneMode.general,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const ValueKey('ai-compose')));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final codec = const StandardMethodCodec();
+    await messenger.handlePlatformMessage(
+      channel.name,
+      codec.encodeMethodCall(
+        const MethodCall('guidance', <String, dynamic>{
+          'saliency': <double>[0.22, 0.25, 0.32, 0.40],
+          'subjectKind': 'object',
+          'roll': 0.0,
+          'pitch': 0.0,
+          'frameW': 1080,
+          'frameH': 1920,
+          'hfov': 42.0,
+          'ts': 3000,
+        }),
+      ),
+      (_) {},
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.byType(GuideOverlay), findsOneWidget);
+    final first = tester.widget<GuideOverlay>(find.byType(GuideOverlay));
+    final firstCenterX = first.subjectBox[0] + first.subjectBox[2] / 2;
+
+    await messenger.handlePlatformMessage(
+      channel.name,
+      codec.encodeMethodCall(
+        const MethodCall('guidance', <String, dynamic>{
+          'saliency': <double>[0.56, 0.24, 0.30, 0.40],
+          'subjectKind': 'object',
+          'roll': 0.0,
+          'pitch': 0.0,
+          'frameW': 1080,
+          'frameH': 1920,
+          'hfov': 42.0,
+          'ts': 4000,
+        }),
+      ),
+      (_) {},
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final second = tester.widget<GuideOverlay>(find.byType(GuideOverlay));
+    final secondCenterX = second.subjectBox[0] + second.subjectBox[2] / 2;
+    expect(secondCenterX, greaterThan(firstCenterX + 0.05));
+  });
 }

@@ -49,6 +49,9 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private var lastSubjectBox: CGRect?
   private var lastSubjectAt: CFTimeInterval = 0
   private var lastSubjectCandidateCount = 0
+  /// 非人主体的独立连续性锚点；不能和人体框共用，否则人/物切换会互相拖拽。
+  private var lastSaliencyBox: CGRect?
+  private var lastSaliencyAt: CFTimeInterval = 0
   private let motionManager = CMMotionManager()
   private let motionLock = NSLock()
   private var rollDegrees: Double = 0
@@ -734,38 +737,58 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       lastActionConfidence = 0
     }
 
-    var salient: VNSaliencyImageObservation?
-    var salientObject: VNRectangleObservation?
+    // 静物/商品/花草这类非人主体：同时跑 attention 和 objectness 两路
+    // saliency，再按“面积适中 + 靠中 + 边缘惩罚 + 上一帧连续性”重新选。
+    // 不能只取最大 salientObjects：背景墙面、桌面经常比主体更大。
+    var attention: VNSaliencyImageObservation?
+    var objectness: VNSaliencyImageObservation?
     do {
-      let saliencyRequest = VNGenerateAttentionBasedSaliencyImageRequest()
-      try handler.perform([saliencyRequest])
-      salient = saliencyRequest.results?.first as? VNSaliencyImageObservation
-      salientObject = salient?.salientObjects?.max {
-        area(of: $0.boundingBox) < area(of: $1.boundingBox)
-      }
+      let attentionRequest = VNGenerateAttentionBasedSaliencyImageRequest()
+      let objectnessRequest = VNGenerateObjectnessBasedSaliencyImageRequest()
+      try handler.perform([attentionRequest, objectnessRequest])
+      attention = attentionRequest.results?.first as? VNSaliencyImageObservation
+      objectness = objectnessRequest.results?.first as? VNSaliencyImageObservation
     } catch {
-      salientObject = nil
+      // 两路任一路失败时仍尽量保留另一路的结果。
+      do {
+        let attentionRequest = VNGenerateAttentionBasedSaliencyImageRequest()
+        try handler.perform([attentionRequest])
+        attention = attentionRequest.results?.first as? VNSaliencyImageObservation
+      } catch {}
     }
 
-    // attention saliency 偶发无结果时，用 objectness saliency 兜底，
-    // 街景/建筑/静物至少还能得到一个可跟随的区域。
-    if salientObject == nil {
-      do {
-        let objectness = VNGenerateObjectnessBasedSaliencyImageRequest()
-        try handler.perform([objectness])
-        let result = objectness.results?.first as? VNSaliencyImageObservation
-        salientObject = result?.salientObjects?.max {
-          area(of: $0.boundingBox) < area(of: $1.boundingBox)
-        }
-      } catch {
-        salientObject = nil
-      }
+    let objectCandidates = selectObjectCandidates(
+      from: [attention, objectness].compactMap { $0 },
+      previous: lastSaliencyBox
+    )
+    let chosenObject = objectCandidates.first
+    let nowObject = CACurrentMediaTime()
+    var salientBox: CGRect?
+    if let chosenObject = chosenObject {
+      lastSaliencyBox = chosenObject
+      lastSaliencyAt = nowObject
+      salientBox = chosenObject
+    } else if let last = lastSaliencyBox,
+              nowObject - lastSaliencyAt < 0.6 {
+      salientBox = last
+    } else {
+      lastSaliencyBox = nil
+    }
+
+    let subjectKind: String?
+    if human != nil {
+      subjectKind = "person"
+    } else if salientBox != nil {
+      subjectKind = "object"
+    } else {
+      subjectKind = nil
     }
 
     sendGuidance(
       box: (human?.boundingBox ?? heldSubjectBox).map { normalizeFrame($0) },
       face: face.map { normalizeFrame($0.boundingBox) },
-      saliency: salientObject.map { normalizeFrame($0.boundingBox) },
+      saliency: salientBox.map { normalizeFrame($0) },
+      subjectKind: subjectKind,
       candidates: humanCandidates
         .sorted { lhs, rhs in
           subjectScore(lhs.boundingBox, previous: lastSubjectBox) >
@@ -780,6 +803,65 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       action: action,
       actionConfidence: actionConfidence
     )
+  }
+
+  /// 合并 attention/objectness 两路显著物体，先过滤不合理框再按评分排序。
+  private func selectObjectCandidates(
+    from observations: [VNSaliencyImageObservation],
+    previous: CGRect?
+  ) -> [CGRect] {
+    var raw: [VNRectangleObservation] = []
+    for observation in observations {
+      raw.append(contentsOf: observation.salientObjects ?? [])
+    }
+    let filtered = raw.filter { object in
+      let box = object.boundingBox
+      let boxArea = area(of: box)
+      let boxW = box.width
+      let boxH = box.height
+      guard boxArea >= 0.012, boxArea <= 0.55,
+            boxW >= 0.06, boxH >= 0.06 else { return false }
+      let aspect = boxW / max(boxH, 0.001)
+      guard aspect >= 0.18, aspect <= 3.8 else { return false }
+      // 几乎贴满画幅的框通常是墙面/天空，不是可拍主体。
+      guard boxW < 0.92, boxH < 0.92 else { return false }
+      return true
+    }
+    // 两路结果常给出同一个框，先按评分去重，避免目标环在两个近似框间跳。
+    var kept: [VNRectangleObservation] = []
+    for candidate in filtered.sorted(by: {
+      objectScore($0.boundingBox, previous: previous) >
+        objectScore($1.boundingBox, previous: previous)
+    }) {
+      if kept.contains(where: { iou($0.boundingBox, candidate.boundingBox) > 0.55 }) {
+        continue
+      }
+      kept.append(candidate)
+    }
+    return kept.prefix(4).map { $0.boundingBox }
+  }
+
+  /// 静物主体评分：面积适中优先，避免“最大块背景”赢；连续性和中心位置并重。
+  private func objectScore(_ box: CGRect, previous: CGRect?) -> CGFloat {
+    let boxArea = min(area(of: box), 0.45)
+    let cx = box.midX
+    let cy = 1.0 - box.midY
+    let centerDistance = hypot(cx - 0.5, cy - 0.46)
+    let centerScore = max(0, 1.0 - centerDistance / 0.70)
+    // 贴边的主体大概率被裁掉一半，稍微降权但不直接丢弃。
+    let edgePenalty: CGFloat =
+      (box.minX < 0.025 || box.maxX > 0.975 || box.minY < 0.025 || box.maxY > 0.975)
+        ? 0.16 : 0
+    let aspect = box.width / max(box.height, 0.001)
+    let aspectPenalty: CGFloat = (aspect > 2.6 || aspect < 0.28) ? 0.18 : 0
+    var continuity: CGFloat = 0
+    if let previous = previous {
+      continuity = iou(box, previous) * 3.0
+      let pcx = previous.midX
+      let pcy = 1.0 - previous.midY
+      continuity += max(0, 1.0 - hypot(cx - pcx, cy - pcy) / 0.42) * 1.6
+    }
+    return boxArea * 5.0 + centerScore * 2.2 + continuity - edgePenalty - aspectPenalty
   }
 
   /// 多人画面里选“上一帧同一个人”，而不是永远选最大/最靠中的人。
@@ -903,6 +985,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     box: [Double]?,
     face: [Double]?,
     saliency: [Double]?,
+    subjectKind: String?,
     candidates: [[Double]],
     roll: Double,
     pitch: Double,
@@ -929,6 +1012,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     if let box = box { payload["box"] = box }
     if let face = face { payload["face"] = face }
     if let saliency = saliency { payload["saliency"] = saliency }
+    if let subjectKind = subjectKind { payload["subjectKind"] = subjectKind }
     if !candidates.isEmpty { payload["candidates"] = candidates }
     if let action = action {
       payload["action"] = action
