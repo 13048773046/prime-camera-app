@@ -512,9 +512,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     // 关闭高分辨率静态拍摄：48MP 解码 + CIImage 滤镜会在快门上产生
     // 数百 MB 峰值内存，容易被 iOS jetsam 直接杀进程。12MP 足够交付。
     photoOutput.isHighResolutionCaptureEnabled = false
-    photoOutput.isLivePhotoCaptureEnabled =
-      photoOutput.isLivePhotoCaptureSupported &&
-      photoOutput.connection(with: .video)?.isLivePhotoCaptureSupported == true
+    photoOutput.isLivePhotoCaptureEnabled = photoOutput.isLivePhotoCaptureSupported
     updatePhotoOutputCapabilities(for: device, position: position)
 
     isConfigured = true
@@ -1193,8 +1191,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       var liveMovieURL: URL? = nil
       if livePhoto &&
           self.photoOutput.isLivePhotoCaptureEnabled &&
-          self.photoOutput.isLivePhotoCaptureSupported &&
-          connection.isLivePhotoCaptureSupported {
+          self.photoOutput.isLivePhotoCaptureSupported {
         let movie = FileManager.default.temporaryDirectory
           .appendingPathComponent("prime-live-\(UUID().uuidString).mov")
         settings.livePhotoMovieFileURL = movie
