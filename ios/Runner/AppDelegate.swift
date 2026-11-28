@@ -1201,7 +1201,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       // 直接写 .quality 会触发 capturePhoto 的 ObjC 异常。
       let maxQuality = self.photoOutput.maxPhotoQualityPrioritization
       settings.photoQualityPrioritization =
-        maxQuality.rawValue >= AVCapturePhotoQualityPrioritization.balanced.rawValue
+        maxQuality.rawValue >= AVCapturePhotoOutput.QualityPrioritization.balanced.rawValue
           ? .balanced
           : maxQuality
       settings.isHighResolutionPhotoEnabled = false
