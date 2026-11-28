@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:lottie/lottie.dart';
 
 /// Doka 1.3.20 的 AI 构图视觉层。
 ///
@@ -16,14 +17,6 @@ const dokaAiColors = <Color>[
   Color(0xFFB1CFFF),
   Color(0xFFFFD2F6),
   Color(0xFFFFC38F),
-];
-
-const dokaMappingColors = <Color>[
-  Color(0xFFB8F0E0),
-  Color(0xFF4FD4E8),
-  Color(0xFF7AA8E8),
-  Color(0xFFE89ED8),
-  Color(0xFFE8A070),
 ];
 
 /// 全屏预览外圈的 Doka 渐变辉光。控件本身比预览大 36dp，
@@ -129,9 +122,11 @@ class _DokaHaloPainter extends CustomPainter {
       old.progress != progress || old.inset != inset || old.radius != radius;
 }
 
-/// Doka `CameraMappingView` 的显示层：固定瞄准点 + 目标环 + 虚线连接。
-/// 只画“该往哪移”，不把主体框画成黄色方块。
-class DokaMappingOverlay extends StatefulWidget {
+/// Doka `CameraMappingView` 的显示层。
+///
+/// 目标环直接使用 APK 里的 `lottie_mapping.json`（36×36、96 帧），
+/// 连接线/白点/进度点按 `CameraMappingView` 的常量绘制。
+class DokaMappingOverlay extends StatelessWidget {
   const DokaMappingOverlay({
     super.key,
     required this.targetBox,
@@ -149,70 +144,81 @@ class DokaMappingOverlay extends StatefulWidget {
   final double progress;
   final Rect? frameRect;
 
-  /// 当前主体框（预览归一化坐标）；连接线从主体中心指向目标环中心，
-  /// 对齐 Doka `CameraMappingView` 的“当前位置 → 目标位置”表达。
+  /// 当前主体框（预览归一化坐标）；连接线从主体中心指向目标环中心。
   final List<double>? originBox;
   final bool showGrid;
 
-  @override
-  State<DokaMappingOverlay> createState() => _DokaMappingOverlayState();
-}
-
-class _DokaMappingOverlayState extends State<DokaMappingOverlay>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _spin = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1800),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _spin.dispose();
-    super.dispose();
+  Offset? _targetCenter(Size size) {
+    final frame = frameRect ?? (Offset.zero & size);
+    if (targetBox.length != 4) return null;
+    final target = Rect.fromLTWH(
+      frame.left + targetBox[0] * frame.width,
+      frame.top + targetBox[1] * frame.height,
+      targetBox[2] * frame.width,
+      targetBox[3] * frame.height,
+    );
+    return Offset(
+      target.center.dx.clamp(frame.left + 34, frame.right - 34),
+      target.center.dy.clamp(frame.top + 34, frame.bottom - 34),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return IgnorePointer(
-      child: AnimatedBuilder(
-        animation: _spin,
-        builder: (context, _) => CustomPaint(
-          painter: _DokaMappingPainter(
-            targetBox: widget.targetBox,
-            aligned: widget.aligned,
-            analyzing: widget.analyzing,
-            progress: widget.progress,
-            frameRect: widget.frameRect,
-            originBox: widget.originBox,
-            showGrid: widget.showGrid,
-            spin: _spin.value,
-          ),
-        ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final size = constraints.biggest;
+          final center = _targetCenter(size);
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              CustomPaint(
+                painter: _DokaConnectorPainter(
+                  targetBox: targetBox,
+                  aligned: aligned,
+                  progress: progress,
+                  frameRect: frameRect,
+                  originBox: originBox,
+                  showGrid: showGrid,
+                ),
+              ),
+              if (!aligned && center != null)
+                Positioned(
+                  left: center.dx - 22,
+                  top: center.dy - 22,
+                  width: 44,
+                  height: 44,
+                  child: Lottie.asset(
+                    'assets/doka/lottie_mapping.json',
+                    fit: BoxFit.fill,
+                    repeat: true,
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
 }
 
-class _DokaMappingPainter extends CustomPainter {
-  const _DokaMappingPainter({
+class _DokaConnectorPainter extends CustomPainter {
+  const _DokaConnectorPainter({
     required this.targetBox,
     required this.aligned,
-    required this.analyzing,
     required this.progress,
     required this.frameRect,
     required this.originBox,
     required this.showGrid,
-    required this.spin,
   });
 
   final List<double> targetBox;
   final bool aligned;
-  final bool analyzing;
   final double progress;
   final Rect? frameRect;
   final List<double>? originBox;
   final bool showGrid;
-  final double spin;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -239,64 +245,18 @@ class _DokaMappingPainter extends CustomPainter {
       );
     }
 
-    Rect? target;
-    if (targetBox.length == 4) {
-      target = Rect.fromLTWH(
-        frame.left + targetBox[0] * frame.width,
-        frame.top + targetBox[1] * frame.height,
-        targetBox[2] * frame.width,
-        targetBox[3] * frame.height,
-      );
-    }
-    if (target == null) return;
+    if (targetBox.length != 4) return;
+    final target = Rect.fromLTWH(
+      frame.left + targetBox[0] * frame.width,
+      frame.top + targetBox[1] * frame.height,
+      targetBox[2] * frame.width,
+      targetBox[3] * frame.height,
+    );
     final targetCenter = Offset(
       target.center.dx.clamp(frame.left + 34, frame.right - 34),
       target.center.dy.clamp(frame.top + 34, frame.bottom - 34),
     );
     _paintConnector(canvas, origin, targetCenter);
-    _paintTarget(canvas, targetCenter, analyzing);
-  }
-
-  void _paintTarget(Canvas canvas, Offset c, bool pulse) {
-    final radius = 24.0 + (pulse ? math.sin(spin * math.pi * 2) * 1.2 : 0);
-    canvas.drawCircle(
-      c,
-      radius + 3,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 10
-        ..color = dokaMappingColors[1].withValues(alpha: 0.12)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
-    );
-    canvas.drawCircle(
-      c,
-      radius,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.4
-        ..color = Colors.white.withValues(alpha: 0.95),
-    );
-    // 五色弧段，绕目标环缓慢旋转，替代当前实现里的星点。
-    final shader = SweepGradient(
-      colors: [
-        dokaMappingColors[0].withValues(alpha: 0.0),
-        ...dokaMappingColors,
-        dokaMappingColors.last.withValues(alpha: 0.0),
-      ],
-      stops: const [0.0, 0.06, 0.2, 0.36, 0.54, 0.72, 1.0],
-      transform: GradientRotation(spin * math.pi * 2),
-    ).createShader(Rect.fromCircle(center: c, radius: radius + 2));
-    canvas.drawArc(
-      Rect.fromCircle(center: c, radius: radius + 1.2),
-      0,
-      math.pi * 1.85,
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4
-        ..strokeCap = StrokeCap.round
-        ..shader = shader,
-    );
   }
 
   void _paintConnector(Canvas canvas, Offset from, Offset to) {
@@ -321,102 +281,41 @@ class _DokaMappingPainter extends CustomPainter {
       final p2 = from + unit * math.min(d + 5, distance - 18);
       canvas.drawLine(p1, p2, paint);
     }
-    // 进度小圆点：对齐进度越高，白点越靠近目标环。
     final dotT = progress.clamp(0.0, 1.0);
     final dot = Offset.lerp(from, to, dotT)!;
     canvas.drawCircle(dot, 3.2, Paint()..color = Colors.white);
   }
 
   @override
-  bool shouldRepaint(covariant _DokaMappingPainter old) =>
-      old.spin != spin ||
+  bool shouldRepaint(covariant _DokaConnectorPainter old) =>
       old.aligned != aligned ||
-      old.analyzing != analyzing ||
       old.progress != progress ||
       old.targetBox != targetBox ||
       old.originBox != originBox ||
       old.frameRect != frameRect;
 }
 
-/// Doka `scanAnimationView` 的近似实现：沿预览边框呼吸的白色粒子 +
-/// 缓慢绕行的高光弧。原版是 267 帧 Lottie，节奏同为 2.67s 循环。
-class DokaScanOverlay extends StatefulWidget {
+/// Doka `scanAnimationView` 原版 Lottie：267 帧 @60fps（4.45s），
+/// 1171×1561 的 3:4 取景幅面，分析期循环播放。
+class DokaScanOverlay extends StatelessWidget {
   const DokaScanOverlay({super.key, required this.active});
 
   final bool active;
 
   @override
-  State<DokaScanOverlay> createState() => _DokaScanOverlayState();
-}
-
-class _DokaScanOverlayState extends State<DokaScanOverlay>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _scan = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 2670),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _scan.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    if (!widget.active) return const SizedBox.shrink();
-    return IgnorePointer(child: CustomPaint(painter: _DokaScanPainter(_scan)));
+    if (!active) return const SizedBox.shrink();
+    return IgnorePointer(
+      child: Lottie.asset(
+        'assets/doka/lottie_scanning.json',
+        fit: BoxFit.fill,
+        repeat: true,
+        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+      ),
+    );
   }
 }
 
-class _DokaScanPainter extends CustomPainter {
-  _DokaScanPainter(this.animation) : super(repaint: animation);
-
-  final Animation<double> animation;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final t = animation.value;
-    const count = 26;
-    final rrect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(1, 1, size.width - 2, size.height - 2),
-      const Radius.circular(24),
-    );
-    final metric = (Path()..addRRect(rrect)).computeMetrics().first;
-    for (var i = 0; i < count; i++) {
-      final distance = metric.length * (i / count + t * 0.12) % metric.length;
-      final pos = metric.getTangentForOffset(distance)?.position;
-      if (pos == null) continue;
-      final pulse = 0.5 + 0.5 * math.sin(t * math.pi * 2 + i * 1.7);
-      canvas.drawCircle(
-        pos,
-        1.2 + pulse * 1.6,
-        Paint()..color = Colors.white.withValues(alpha: 0.10 + pulse * 0.34),
-      );
-    }
-    final shader = SweepGradient(
-      colors: [
-        Colors.white.withValues(alpha: 0),
-        dokaMappingColors[1].withValues(alpha: 0.55),
-        dokaMappingColors[3].withValues(alpha: 0.55),
-        Colors.white.withValues(alpha: 0),
-      ],
-      transform: GradientRotation(t * math.pi * 2),
-    ).createShader(Offset.zero & size);
-    canvas.drawRRect(
-      rrect,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..shader = shader,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _DokaScanPainter old) => false;
-}
-
-/// Doka `bg_translucent_panel`：20dp 圆角、1dp 六色渐变描边、#B3000000 内底。
 class DokaAiHud extends StatelessWidget {
   const DokaAiHud({
     super.key,
