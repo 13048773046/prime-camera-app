@@ -16,6 +16,8 @@ class CameraPrefs {
   bool selfieMirror = true;
   bool multiCompose = true;
   bool aiFilter = true;
+  bool autoZoom = true;
+  bool actionRecognition = true;
   bool subjectGuide = true;
   bool alignmentConfirm = true;
   bool noiseReduction = true;
@@ -26,6 +28,9 @@ class CameraPrefs {
   int timerSeconds = 0;
   String videoQuality = '1080P';
   DateTime? proUntil;
+  int remainingCompose = 5;
+  int remainingFilter = 5;
+  int freeAiLimit = 5;
   String? accountPhone;
   String? authToken;
   String? userName;
@@ -38,6 +43,31 @@ class CameraPrefs {
     proUntil = DateTime.now().add(Duration(days: days));
   }
 
+  /// 把 `/ai_camera/auth/me` 或支付/兑换返回的资料统一落到本地。
+  void applyProfile(Map<String, dynamic> profile) {
+    final phone = profile['phone_num']?.toString() ?? '';
+    if (phone.isNotEmpty) accountPhone = phone;
+    final name = profile['username']?.toString() ?? '';
+    if (name.isNotEmpty) userName = name;
+    final expire = DateTime.tryParse(
+      profile['vip_expire_at']?.toString() ?? '',
+    );
+    proUntil = expire;
+    freeAiLimit =
+        int.tryParse(profile['free_ai_limit']?.toString() ?? '') ?? freeAiLimit;
+    remainingCompose =
+        int.tryParse(profile['remaining_compose_count']?.toString() ?? '') ??
+        remainingCompose;
+    remainingFilter =
+        int.tryParse(profile['remaining_filter_count']?.toString() ?? '') ??
+        remainingFilter;
+  }
+
+  String get freeAiText {
+    if (isPro) return '不限';
+    return '$remainingCompose / $freeAiLimit';
+  }
+
   void reset() {
     grid = false;
     flash = false;
@@ -48,6 +78,8 @@ class CameraPrefs {
     selfieMirror = true;
     multiCompose = true;
     aiFilter = true;
+    autoZoom = true;
+    actionRecognition = true;
     subjectGuide = true;
     alignmentConfirm = true;
     noiseReduction = true;
@@ -58,6 +90,9 @@ class CameraPrefs {
     timerSeconds = 0;
     videoQuality = '1080P';
     proUntil = null;
+    remainingCompose = 5;
+    remainingFilter = 5;
+    freeAiLimit = 5;
     accountPhone = null;
     authToken = null;
     userName = null;

@@ -53,6 +53,8 @@ class GuidanceFrame {
     this.box,
     this.face,
     this.saliency,
+    this.action,
+    this.actionConfidence = 0,
   });
 
   final double roll;
@@ -67,7 +69,27 @@ class GuidanceFrame {
   /// 非人像场景的显著主体（建筑、树、招牌、静物等）。
   final List<double>? saliency;
 
+  /// 原生 Vision 人体姿态识别出的动作：standing/walking/arms_up/...
+  final String? action;
+  final double actionConfidence;
+
   bool get hasSubject => box != null && box!.length == 4;
+
+  String? get actionLabel {
+    if (action == null || action!.isEmpty || actionConfidence < 0.22) {
+      return null;
+    }
+    return switch (action) {
+      'standing' => '站立',
+      'walking' => '行走',
+      'arms_up' => '举手',
+      'hands_on_hips' => '叉腰',
+      'sitting' => '坐姿',
+      'leaning' => '倾斜',
+      'crouching' => '蹲姿',
+      _ => null,
+    };
+  }
 
   factory GuidanceFrame.fromMap(Map<String, dynamic> map) {
     List<double>? rect(dynamic value) {
@@ -86,6 +108,8 @@ class GuidanceFrame {
       box: rect(map['box']),
       face: rect(map['face']),
       saliency: rect(map['saliency']),
+      action: map['action']?.toString(),
+      actionConfidence: (map['actionConfidence'] as num? ?? 0).toDouble(),
     );
   }
 }

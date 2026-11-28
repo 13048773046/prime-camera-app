@@ -8,7 +8,12 @@ import 'package:http/http.dart' as http;
 /// 未配置时保持本地体验账号，不把手机号发到任何地方。
 class DokaApi {
   DokaApi({String? baseUrl})
-    : baseUrl = baseUrl ?? const String.fromEnvironment('PRIME_API_BASE', defaultValue: 'https://uosar.yosar.cloud');
+    : baseUrl =
+          baseUrl ??
+          const String.fromEnvironment(
+            'PRIME_API_BASE',
+            defaultValue: 'https://uosar.yosar.cloud',
+          );
 
   static final DokaApi instance = DokaApi();
 
@@ -31,7 +36,8 @@ class DokaApi {
             _uri(path),
             headers: {
               'Content-Type': 'application/json',
-              if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+              if (token != null && token.isNotEmpty)
+                'Authorization': 'Bearer $token',
             },
             body: jsonEncode(body),
           )
@@ -42,7 +48,9 @@ class DokaApi {
       final map = Map<String, dynamic>.from(decoded);
       if (map['code'] != 0) return null;
       final data = map['data'];
-      return data is Map ? Map<String, dynamic>.from(data) : <String, dynamic>{};
+      return data is Map
+          ? Map<String, dynamic>.from(data)
+          : <String, dynamic>{};
     } catch (_) {
       return null;
     }
@@ -57,7 +65,11 @@ class DokaApi {
     return data?['dev_code']?.toString();
   }
 
-  Future<Map<String, dynamic>?> login(String phone, String code, {String username = ''}) {
+  Future<Map<String, dynamic>?> login(
+    String phone,
+    String code, {
+    String username = '',
+  }) {
     return _post('/ai_camera/auth/login', {
       'phone_num': phone,
       'msg_code': code,
@@ -70,6 +82,60 @@ class DokaApi {
   }
 
   Future<Map<String, dynamic>?> redeem(String code, String token) async {
-    return _post('/api/v1/redeem_vip_code', {'redeem_code': code}, token: token);
+    return _post('/api/v1/redeem_vip_code', {
+      'redeem_code': code,
+    }, token: token);
+  }
+
+  Future<Map<String, dynamic>?> vipProducts() async {
+    if (!enabled) return null;
+    try {
+      final response = await http
+          .get(_uri('/ai_camera/vip/products'))
+          .timeout(const Duration(seconds: 6));
+      if (response.statusCode != 200) return null;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map || decoded['code'] != 0) return null;
+      final data = decoded['data'];
+      return data is Map ? Map<String, dynamic>.from(data) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> createOrder(String productId, String token) {
+    return _post('/ai_camera/pay/create_order', {
+      'product_id': productId,
+    }, token: token);
+  }
+
+  Future<Map<String, dynamic>?> mockConfirm(
+    String orderNo,
+    String token,
+  ) async {
+    if (!enabled) return null;
+    try {
+      final response = await http
+          .post(
+            _uri(
+              '/ai_camera/pay/mock_confirm?out_trade_no=${Uri.encodeQueryComponent(orderNo)}',
+            ),
+            headers: {if (token.isNotEmpty) 'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return null;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map || decoded['code'] != 0) return null;
+      final data = decoded['data'];
+      return data is Map
+          ? Map<String, dynamic>.from(data)
+          : <String, dynamic>{};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> deleteAccount(String token) {
+    return _post('/ai_camera/auth/delete_account', const {}, token: token);
   }
 }

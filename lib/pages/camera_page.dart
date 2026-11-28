@@ -144,6 +144,10 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   String? _promptTitle;
   String? _promptSubtitle;
   String? _lastActionLabel;
+  String? _actionLabel;
+  double _actionConfidence = 0;
+  DateTime? _lastAutoZoomAt;
+  bool _autoZoomBusy = false;
 
   static const List<double> _zoomValues = [0.5, 1.0, 2.0, 5.0];
   static const List<String> _zoomLabels = ['.5', '1x', '2', '5'];
@@ -493,7 +497,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         _recommendedFilterName = plan.filterName;
         _recommendedFilterId = plan.filterId;
       });
-      if (!_aligned && plan.reason.isNotEmpty && plan.reason != _lastServerReason) {
+      if (!_aligned &&
+          plan.reason.isNotEmpty &&
+          plan.reason != _lastServerReason) {
         _lastServerReason = plan.reason;
         _showPrompt('小萤看过画面', plan.reason, 1900);
       }
@@ -561,6 +567,25 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _alignProgress = newlyAligned ? 1.0 : guide.progress;
       if (!newlyAligned) _aligned = false;
     });
+
+    // 动作识别来自原生 Vision 的 17 点人体骨架；只在状态变化时提示，
+    // 避免每一帧都弹一次“站立/行走”，把取景画面吵乱。
+    final nextAction = CameraPrefs.instance.actionRecognition
+        ? frame.actionLabel
+        : null;
+    if (nextAction != _actionLabel) {
+      setState(() {
+        _actionLabel = nextAction;
+        _actionConfidence = frame.actionConfidence;
+      });
+      if (nextAction != null && !_analyzing) {
+        _showPrompt('动作识别', '识别到$nextAction，构图口令已同步', 1300);
+      }
+    }
+
+    if (CameraPrefs.instance.autoZoom) {
+      _maybeAutoZoom(frame, guide);
+    }
     if (newlyAligned && confirm) {
       _alignConfirmTimer?.cancel();
       _alignConfirmTimer = Timer(const Duration(milliseconds: 400), () {
@@ -588,6 +613,59 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   bool _isAlignedGuide(ComposeResult guide) =>
       guide.actionLabel == '已对齐' || guide.hint.startsWith('可以拍了');
+
+  /// Doka 的 AI 构图不是只给框：主体在画面里太小/太大时，镜头要
+  /// 跟着换焦段。这里用人体框高度和目标高度的比例做一次迟滞变焦，
+  /// 避免 1×↔2× 来回跳；真正按下快门仍保留用户选择的焦段。
+  Future<void> _maybeAutoZoom(GuidanceFrame frame, ComposeResult guide) async {
+    if (!_live ||
+        _analyzing ||
+        guide.confidence <= 0.05 ||
+        _autoZoomBusy ||
+        _scene == SceneMode.landscape ||
+        frame.box == null ||
+        frame.box!.length != 4) {
+      return;
+    }
+    final subjectH = frame.box![3];
+    if (subjectH < 0.05 || subjectH > 0.98) return;
+    final targetH = _activePlan.targetHeight.clamp(0.18, 0.78);
+    final ratio = targetH / subjectH;
+    final currentZoom = _zoomValues[_zoomIndex];
+    final desired = (currentZoom * ratio).clamp(0.5, 5.0);
+    var nearest = _nearestZoomIndex(desired);
+    if (nearest == 0 && !_ultraWideAvailable) nearest = 1;
+    if (nearest == _zoomIndex) return;
+
+    // 只有明显偏小/偏大才切；0.72–1.35 的误差留在原地，靠走位解决。
+    if (ratio > 1.35 && nearest > _zoomIndex) {
+      // 继续拉近。
+    } else if (ratio < 0.72 && nearest < _zoomIndex) {
+      // 退一点，给主体留出环境。
+    } else {
+      return;
+    }
+    final now = DateTime.now();
+    final last = _lastAutoZoomAt;
+    if (last != null &&
+        now.difference(last) < const Duration(milliseconds: 3200)) {
+      return;
+    }
+    _lastAutoZoomAt = now;
+    _autoZoomBusy = true;
+    try {
+      await _selectZoom(nearest);
+      if (mounted) {
+        _showPrompt(
+          'AI 自动变焦',
+          '主体占比 ${(subjectH * 100).round()}% · 切到 ${_zoomLabels[nearest]}×',
+          1700,
+        );
+      }
+    } finally {
+      _autoZoomBusy = false;
+    }
+  }
 
   ComposeResult _presetFor(int index, SceneMode mode) {
     if (mode != SceneMode.portrait) return _scenePreset(index, mode);
@@ -885,7 +963,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
           Navigator.of(sheetContext).pop();
           if (id == _filterId) return;
           if (filterById(id).pro && !CameraPrefs.instance.isPro) {
-            _showPrompt('Doka Pro 胶片', '$label 需要 Pro；在“我的 → 兑换码”输入 PRIME2026', 2600);
+            _showPrompt(
+              'Doka Pro 胶片',
+              '$label 需要 Pro；在“我的 → 兑换码”输入 PRIME2026',
+              2600,
+            );
             return;
           }
           setState(() => _filterId = id);
@@ -926,9 +1008,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   }
 
   Future<void> _openSettings() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const SettingsPage()),
-    );
+    await Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const SettingsPage()));
     if (!mounted) return;
     final changed = _scene != CameraPrefs.instance.scene;
     setState(() {
@@ -1142,16 +1223,25 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 ? Icons.motion_photos_on
                 : Icons.motion_photos_off,
             () {
-              setState(() => CameraPrefs.instance.livePhoto = !CameraPrefs.instance.livePhoto);
+              setState(
+                () => CameraPrefs.instance.livePhoto =
+                    !CameraPrefs.instance.livePhoto,
+              );
               _showPrompt(
                 CameraPrefs.instance.livePhoto ? '实况照片已开启' : '实况照片已关闭',
-                CameraPrefs.instance.livePhoto ? '快门前会同时录制 1.5 秒动态' : '下一张只保存静态照片',
+                CameraPrefs.instance.livePhoto
+                    ? '快门前会同时录制 1.5 秒动态'
+                    : '下一张只保存静态照片',
                 1800,
               );
             },
             tooltip: '实况照片',
             active: CameraPrefs.instance.livePhoto,
           ),
+          if (_actionLabel != null) ...[
+            const SizedBox(width: 8),
+            _buildActionChip(),
+          ],
           const Spacer(),
           _glassTopButton(
             Icons.settings_outlined,
@@ -1163,7 +1253,57 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _glassTopButton(IconData icon, VoidCallback onTap, {String? tooltip, bool active = false}) {
+  Widget _buildActionChip() {
+    return IgnorePointer(
+      child: Container(
+        height: 28,
+        padding: const EdgeInsets.symmetric(horizontal: 9),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.28),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: PrimeColor.white12, width: 0.8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.accessibility_new_rounded,
+              size: 13,
+              color: Color(0xFF7ECFC8),
+            ),
+            const SizedBox(width: 5),
+            Text(
+              '动作 · $_actionLabel',
+              style: const TextStyle(
+                fontSize: 10,
+                height: 1,
+                color: PrimeColor.white70,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            if (_actionConfidence > 0.6) ...[
+              const SizedBox(width: 5),
+              Container(
+                width: 4,
+                height: 4,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF7ECFC8),
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _glassTopButton(
+    IconData icon,
+    VoidCallback onTap, {
+    String? tooltip,
+    bool active = false,
+  }) {
     final button = GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
@@ -1193,12 +1333,14 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapUp: (details) {
-            final x = ((details.localPosition.dx - previewRect.left) /
-                    previewRect.width)
-                .clamp(0.0, 1.0);
-            final y = ((details.localPosition.dy - previewRect.top) /
-                    previewRect.height)
-                .clamp(0.0, 1.0);
+            final x =
+                ((details.localPosition.dx - previewRect.left) /
+                        previewRect.width)
+                    .clamp(0.0, 1.0);
+            final y =
+                ((details.localPosition.dy - previewRect.top) /
+                        previewRect.height)
+                    .clamp(0.0, 1.0);
             _camera.focusAt(x, y);
             if (CameraPrefs.instance.touchShot) {
               _capture();
@@ -1211,8 +1353,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
           },
           onVerticalDragUpdate: (details) {
             if (!_showExposure) return;
-            final next = (_exposure - details.delta.dy / 90)
-                .clamp(-2.0, 2.0);
+            final next = (_exposure - details.delta.dy / 90).clamp(-2.0, 2.0);
             if ((next - _exposure).abs() < 0.001) return;
             setState(() => _exposure = next);
             _camera.setExposure(next);
@@ -1230,12 +1371,14 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
           },
           onLongPressStart: (details) {
             if (!CameraPrefs.instance.subjectGuide) return;
-            final x = ((details.localPosition.dx - previewRect.left) /
-                    previewRect.width)
-                .clamp(0.0, 1.0);
-            final y = ((details.localPosition.dy - previewRect.top) /
-                    previewRect.height)
-                .clamp(0.0, 1.0);
+            final x =
+                ((details.localPosition.dx - previewRect.left) /
+                        previewRect.width)
+                    .clamp(0.0, 1.0);
+            final y =
+                ((details.localPosition.dy - previewRect.top) /
+                        previewRect.height)
+                    .clamp(0.0, 1.0);
             const w = 0.34;
             const h = 0.50;
             setState(() {
@@ -1257,7 +1400,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
               ),
               IgnorePointer(
                 child: GuideOverlay(
-                  subjectBox: _lockedSubjectBox ?? _guide?.subjectBox ?? const [],
+                  subjectBox:
+                      _lockedSubjectBox ?? _guide?.subjectBox ?? const [],
                   targetBox: (_guide?.targetBox.isNotEmpty ?? false)
                       ? _guide!.targetBox
                       : _scene.defaultTargetBox,
@@ -1269,17 +1413,14 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                   subjectLabel: _lockedSubjectBox != null
                       ? '已锁定主体'
                       : _subjectLabel == '主体'
-                          ? '拍照主体'
-                          : '拍照主体 · $_subjectLabel',
+                      ? '拍照主体'
+                      : '拍照主体 · $_subjectLabel',
                 ),
               ),
               if (CameraPrefs.instance.level)
                 IgnorePointer(
                   child: CustomPaint(
-                    painter: _LevelPainter(
-                      roll: _lastRoll,
-                      pitch: _lastPitch,
-                    ),
+                    painter: _LevelPainter(roll: _lastRoll, pitch: _lastPitch),
                   ),
                 ),
               if (_showExposure)
@@ -1500,7 +1641,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         decoration: BoxDecoration(
           color: const Color(0xE60A0A0A),
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: const Color(0xFF7ECFC8).withValues(alpha: 0.55)),
+          border: Border.all(
+            color: const Color(0xFF7ECFC8).withValues(alpha: 0.55),
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -2993,7 +3136,6 @@ class _RatioSheet extends StatelessWidget {
   }
 }
 
-
 class _ExposureBar extends StatelessWidget {
   const _ExposureBar({required this.value});
 
@@ -3014,8 +3156,14 @@ class _ExposureBar extends StatelessWidget {
         children: [
           const SizedBox(height: 8),
           Text(
-            value >= 0 ? '+${value.toStringAsFixed(1)}' : value.toStringAsFixed(1),
-            style: const TextStyle(fontSize: 9, color: PrimeColor.white70, fontWeight: FontWeight.w600),
+            value >= 0
+                ? '+${value.toStringAsFixed(1)}'
+                : value.toStringAsFixed(1),
+            style: const TextStyle(
+              fontSize: 9,
+              color: PrimeColor.white70,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           Expanded(
             child: Padding(
@@ -3039,7 +3187,10 @@ class _ExposureBar extends StatelessWidget {
               ),
             ),
           ),
-          const Text('EV', style: TextStyle(fontSize: 8, color: PrimeColor.white38)),
+          const Text(
+            'EV',
+            style: TextStyle(fontSize: 8, color: PrimeColor.white38),
+          ),
           const SizedBox(height: 8),
         ],
       ),
@@ -3080,7 +3231,9 @@ class _LevelPainter extends CustomPainter {
     );
     final label = TextPainter(
       text: TextSpan(
-        text: (roll.abs() < 0.02 ? '水平' : 'ROLL ${(roll * 18).toStringAsFixed(0)}°'),
+        text: (roll.abs() < 0.02
+            ? '水平'
+            : 'ROLL ${(roll * 18).toStringAsFixed(0)}°'),
         style: const TextStyle(fontSize: 9, color: Color(0x99FFFFFF)),
       ),
       textDirection: TextDirection.ltr,

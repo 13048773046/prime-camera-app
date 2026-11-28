@@ -37,7 +37,11 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         title: const Text(
           '设置',
-          style: TextStyle(fontSize: 17, color: PrimeColor.white, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            fontSize: 17,
+            color: PrimeColor.white,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
       body: ListView(
@@ -55,15 +59,33 @@ class _SettingsPageState extends State<SettingsPage> {
                     GestureDetector(
                       onTap: () => _set(() => _prefs.scene = scene),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 7,
+                        ),
                         decoration: BoxDecoration(
-                          color: _prefs.scene == scene ? PrimeColor.white : PrimeColor.white06,
+                          color: _prefs.scene == scene
+                              ? PrimeColor.white
+                              : PrimeColor.white06,
                           borderRadius: BorderRadius.circular(999),
-                          border: Border.all(color: _prefs.scene == scene ? Colors.transparent : PrimeColor.white12, width: 0.8),
+                          border: Border.all(
+                            color: _prefs.scene == scene
+                                ? Colors.transparent
+                                : PrimeColor.white12,
+                            width: 0.8,
+                          ),
                         ),
                         child: Text(
                           scene.label,
-                          style: TextStyle(fontSize: 11, color: _prefs.scene == scene ? PrimeColor.black : PrimeColor.white54, fontWeight: _prefs.scene == scene ? FontWeight.w600 : FontWeight.w400),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: _prefs.scene == scene
+                                ? PrimeColor.black
+                                : PrimeColor.white54,
+                            fontWeight: _prefs.scene == scene
+                                ? FontWeight.w600
+                                : FontWeight.w400,
+                          ),
                         ),
                       ),
                     ),
@@ -74,7 +96,10 @@ class _SettingsPageState extends State<SettingsPage> {
               padding: EdgeInsets.fromLTRB(14, 2, 14, 12),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('锁定场景后，AI 会按这个场景的构图规则给拍法。', style: TextStyle(fontSize: 10, color: PrimeColor.white38)),
+                child: Text(
+                  '锁定场景后，AI 会按这个场景的构图规则给拍法。',
+                  style: TextStyle(fontSize: 10, color: PrimeColor.white38),
+                ),
               ),
             ),
           ]),
@@ -148,6 +173,22 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             _divider(),
             _switchRow(
+              'AI 自动变焦',
+              '识别主体在画面里的大小，自动切到更合适的焦段；不会在按快门后强行改片',
+              _prefs.autoZoom,
+              (v) => _set(() => _prefs.autoZoom = v),
+              icon: Icons.zoom_in_map,
+            ),
+            _divider(),
+            _switchRow(
+              '动作识别',
+              '用原生 Vision 骨架识别站立、行走、举手、叉腰等姿态，提示构图',
+              _prefs.actionRecognition,
+              (v) => _set(() => _prefs.actionRecognition = v),
+              icon: Icons.accessibility_new_rounded,
+            ),
+            _divider(),
+            _switchRow(
               'AI 多景别构图',
               '一次取景给出远景、中景、近景多套拍法',
               _prefs.multiCompose,
@@ -202,11 +243,7 @@ class _SettingsPageState extends State<SettingsPage> {
               icon: Icons.branding_watermark_outlined,
             ),
             _divider(),
-            _navRow(
-              '水印和边框',
-              '选择无边框、白边、胶片边框或杂志边框',
-              () => _openBorder(context),
-            ),
+            _navRow('水印和边框', '选择无边框、白边、胶片边框或杂志边框', () => _openBorder(context)),
           ]),
 
           _section('通用'),
@@ -219,7 +256,11 @@ class _SettingsPageState extends State<SettingsPage> {
             _divider(),
             _navRow('帮助与反馈', '邮件、抖音、小红书三个入口', () => _feedback(context)),
             _divider(),
-            _navRow('关于 PRIME', '版本 0.4.5 · 隐私政策 · 开源许可', () => _about(context)),
+            _navRow(
+              '关于 PRIME',
+              '版本 0.5.0 · 隐私政策 · 开源许可',
+              () => _about(context),
+            ),
           ]),
 
           _section('高级'),
@@ -244,7 +285,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 18),
           const Center(
             child: Text(
-              'PRIME 0.4.5 · 设置会立即生效',
+              'PRIME 0.5.0 · 设置会立即生效',
               style: TextStyle(fontSize: 10, color: PrimeColor.white24),
             ),
           ),
@@ -254,25 +295,40 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _section(String title) => Padding(
-        padding: const EdgeInsets.only(top: 20, bottom: 8, left: 4),
-        child: Text(
-          title,
-          style: const TextStyle(fontSize: 11, color: PrimeColor.white38, letterSpacing: 1.2),
-        ),
-      );
+    padding: const EdgeInsets.only(top: 20, bottom: 8, left: 4),
+    child: Text(
+      title,
+      style: const TextStyle(
+        fontSize: 11,
+        color: PrimeColor.white38,
+        letterSpacing: 1.2,
+      ),
+    ),
+  );
 
   Widget _card(List<Widget> children) => Container(
-        decoration: BoxDecoration(
-          color: PrimeColor.surfaceLift,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: PrimeColor.white06, width: 0.8),
-        ),
-        child: Column(children: children),
-      );
+    decoration: BoxDecoration(
+      color: PrimeColor.surfaceLift,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: PrimeColor.white06, width: 0.8),
+    ),
+    child: Column(children: children),
+  );
 
-  Widget _divider() => const Divider(height: 0.8, thickness: 0.8, color: PrimeColor.white06, indent: 52);
+  Widget _divider() => const Divider(
+    height: 0.8,
+    thickness: 0.8,
+    color: PrimeColor.white06,
+    indent: 52,
+  );
 
-  Widget _switchRow(String title, String subtitle, bool value, ValueChanged<bool> onChanged, {IconData? icon}) {
+  Widget _switchRow(
+    String title,
+    String subtitle,
+    bool value,
+    ValueChanged<bool> onChanged, {
+    IconData? icon,
+  }) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 11, 10, 11),
       child: Row(
@@ -286,9 +342,23 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontSize: 13, color: PrimeColor.white, fontWeight: FontWeight.w500)),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: PrimeColor.white,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
                 const SizedBox(height: 3),
-                Text(subtitle, style: const TextStyle(fontSize: 10, height: 1.35, color: PrimeColor.white38)),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 10,
+                    height: 1.35,
+                    color: PrimeColor.white38,
+                  ),
+                ),
               ],
             ),
           ),
@@ -306,29 +376,49 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _navRow(String title, String value, VoidCallback onTap) => InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 15, 12, 15),
-          child: Row(
-            children: [
-              Expanded(child: Text(title, style: const TextStyle(fontSize: 13, color: PrimeColor.white))),
-              Text(value, style: const TextStyle(fontSize: 11, color: PrimeColor.white38)),
-              const SizedBox(width: 4),
-              const Icon(Icons.chevron_right_rounded, size: 18, color: PrimeColor.white24),
-            ],
+    onTap: onTap,
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 15, 12, 15),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(fontSize: 13, color: PrimeColor.white),
+            ),
           ),
-        ),
-      );
+          Text(
+            value,
+            style: const TextStyle(fontSize: 11, color: PrimeColor.white38),
+          ),
+          const SizedBox(width: 4),
+          const Icon(
+            Icons.chevron_right_rounded,
+            size: 18,
+            color: PrimeColor.white24,
+          ),
+        ],
+      ),
+    ),
+  );
 
   Widget _valueRow(String title, String value) => Padding(
-        padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
-        child: Row(
-          children: [
-            Expanded(child: Text(title, style: const TextStyle(fontSize: 12, color: PrimeColor.white54))),
-            Text(value, style: const TextStyle(fontSize: 11, color: PrimeColor.white38)),
-          ],
+    padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(fontSize: 12, color: PrimeColor.white54),
+          ),
         ),
-      );
+        Text(
+          value,
+          style: const TextStyle(fontSize: 11, color: PrimeColor.white38),
+        ),
+      ],
+    ),
+  );
 
   void _openBorder(BuildContext context) {
     showModalBottomSheet<void>(
@@ -382,7 +472,8 @@ class _SettingsPageState extends State<SettingsPage> {
       widget.onOpenGuide!();
       return;
     }
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const GuidePage()));
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const GuidePage()));
   }
 
   void _diagnose(BuildContext context) {
@@ -390,12 +481,24 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: PrimeColor.surfaceLift,
-        title: const Text('问题诊断', style: TextStyle(color: PrimeColor.white, fontSize: 16)),
+        title: const Text(
+          '问题诊断',
+          style: TextStyle(color: PrimeColor.white, fontSize: 16),
+        ),
         content: const Text(
           '相机：等待真机授权\nAI 服务：本地规则可用\n后端：未连接（可在“我的”里配置 PRIME_API_BASE）\n存储：可写\n\n如遇黑屏，请先在系统设置里允许 PRIME 使用相机。',
-          style: TextStyle(color: PrimeColor.white54, fontSize: 12, height: 1.7),
+          style: TextStyle(
+            color: PrimeColor.white54,
+            fontSize: 12,
+            height: 1.7,
+          ),
         ),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('知道了'))],
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('知道了'),
+          ),
+        ],
       ),
     );
   }
@@ -418,12 +521,24 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: PrimeColor.surfaceLift,
-        title: const Text('关于 PRIME', style: TextStyle(color: PrimeColor.white, fontSize: 16)),
-        content: const Text(
-          'PRIME 0.4.5\n把手机当成一台有摄影指导的相机。\n\nDoka 1.3.20 前端逻辑研究项目；PRIME 使用自有品牌与素材。',
-          style: TextStyle(color: PrimeColor.white54, fontSize: 12, height: 1.7),
+        title: const Text(
+          '关于 PRIME',
+          style: TextStyle(color: PrimeColor.white, fontSize: 16),
         ),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭'))],
+        content: const Text(
+          'PRIME 0.5.0\n把手机当成一台有摄影指导的相机。\n\nDoka 1.3.20 前端逻辑研究项目；PRIME 使用自有品牌与素材。',
+          style: TextStyle(
+            color: PrimeColor.white54,
+            fontSize: 12,
+            height: 1.7,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
       ),
     );
   }
@@ -458,9 +573,19 @@ class _BorderSheet extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('水印和边框', style: TextStyle(fontSize: 18, color: PrimeColor.white, fontWeight: FontWeight.w600)),
+              const Text(
+                '水印和边框',
+                style: TextStyle(
+                  fontSize: 18,
+                  color: PrimeColor.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
               const SizedBox(height: 6),
-              const Text('边框只影响导出，不改动原始底片。', style: TextStyle(fontSize: 11, color: PrimeColor.white38)),
+              const Text(
+                '边框只影响导出，不改动原始底片。',
+                style: TextStyle(fontSize: 11, color: PrimeColor.white38),
+              ),
               const SizedBox(height: 14),
               for (final item in styles)
                 GestureDetector(
@@ -470,7 +595,9 @@ class _BorderSheet extends StatelessWidget {
                     margin: const EdgeInsets.only(bottom: 8),
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: item.$1 == selected ? PrimeColor.white : PrimeColor.white06,
+                      color: item.$1 == selected
+                          ? PrimeColor.white
+                          : PrimeColor.white06,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Row(
@@ -482,16 +609,22 @@ class _BorderSheet extends StatelessWidget {
                             color: item.$1 == 'white'
                                 ? Colors.white
                                 : item.$1 == 'film'
-                                    ? const Color(0xFF151515)
-                                    : PrimeColor.white12,
+                                ? const Color(0xFF151515)
+                                : PrimeColor.white12,
                             borderRadius: BorderRadius.circular(3),
-                            border: Border.all(color: item.$1 == 'film' ? PrimeColor.white24 : Colors.transparent),
+                            border: Border.all(
+                              color: item.$1 == 'film'
+                                  ? PrimeColor.white24
+                                  : Colors.transparent,
+                            ),
                           ),
                           child: Center(
                             child: Container(
                               width: 30,
                               height: 38,
-                              color: item.$1 == 'white' ? const Color(0xFFE9E6DE) : PrimeColor.white24,
+                              color: item.$1 == 'white'
+                                  ? const Color(0xFFE9E6DE)
+                                  : PrimeColor.white24,
                             ),
                           ),
                         ),
@@ -500,14 +633,35 @@ class _BorderSheet extends StatelessWidget {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(item.$2, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: item.$1 == selected ? PrimeColor.black : PrimeColor.white)),
+                              Text(
+                                item.$2,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: item.$1 == selected
+                                      ? PrimeColor.black
+                                      : PrimeColor.white,
+                                ),
+                              ),
                               const SizedBox(height: 2),
-                              Text(item.$3, style: TextStyle(fontSize: 10, color: item.$1 == selected ? Colors.black54 : PrimeColor.white38)),
+                              Text(
+                                item.$3,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: item.$1 == selected
+                                      ? Colors.black54
+                                      : PrimeColor.white38,
+                                ),
+                              ),
                             ],
                           ),
                         ),
                         if (item.$1 == selected)
-                          const Icon(Icons.check_circle_rounded, size: 18, color: PrimeColor.black),
+                          const Icon(
+                            Icons.check_circle_rounded,
+                            size: 18,
+                            color: PrimeColor.black,
+                          ),
                       ],
                     ),
                   ),
@@ -521,7 +675,12 @@ class _BorderSheet extends StatelessWidget {
 }
 
 class _SimpleListSheet extends StatelessWidget {
-  const _SimpleListSheet({required this.title, required this.options, required this.selected, required this.onSelect});
+  const _SimpleListSheet({
+    required this.title,
+    required this.options,
+    required this.selected,
+    required this.onSelect,
+  });
 
   final String title;
   final List<String> options;
@@ -531,7 +690,10 @@ class _SimpleListSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(color: PrimeColor.black, borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      decoration: const BoxDecoration(
+        color: PrimeColor.black,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       child: SafeArea(
         top: false,
         child: Padding(
@@ -540,7 +702,14 @@ class _SimpleListSheet extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: const TextStyle(fontSize: 18, color: PrimeColor.white, fontWeight: FontWeight.w600)),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 18,
+                  color: PrimeColor.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
               const SizedBox(height: 12),
               for (final item in options)
                 GestureDetector(
@@ -550,8 +719,21 @@ class _SimpleListSheet extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     child: Row(
                       children: [
-                        Expanded(child: Text(item, style: const TextStyle(fontSize: 13, color: PrimeColor.white70))),
-                        if (item == selected) const Icon(Icons.check_rounded, size: 18, color: PrimeColor.white),
+                        Expanded(
+                          child: Text(
+                            item,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: PrimeColor.white70,
+                            ),
+                          ),
+                        ),
+                        if (item == selected)
+                          const Icon(
+                            Icons.check_rounded,
+                            size: 18,
+                            color: PrimeColor.white,
+                          ),
                       ],
                     ),
                   ),
@@ -586,7 +768,10 @@ class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(color: PrimeColor.black, borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      decoration: const BoxDecoration(
+        color: PrimeColor.black,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       child: SafeArea(
         top: false,
         child: Padding(
@@ -595,11 +780,24 @@ class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('AI 滤镜偏好', style: TextStyle(fontSize: 18, color: PrimeColor.white, fontWeight: FontWeight.w600)),
+              const Text(
+                'AI 滤镜偏好',
+                style: TextStyle(
+                  fontSize: 18,
+                  color: PrimeColor.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
               const SizedBox(height: 5),
-              const Text('AI 会先推荐你常拍的场景，再从偏好系列里选一款。', style: TextStyle(fontSize: 11, color: PrimeColor.white38)),
+              const Text(
+                'AI 会先推荐你常拍的场景，再从偏好系列里选一款。',
+                style: TextStyle(fontSize: 11, color: PrimeColor.white38),
+              ),
               const SizedBox(height: 16),
-              const Text('常拍场景', style: TextStyle(fontSize: 12, color: PrimeColor.white54)),
+              const Text(
+                '常拍场景',
+                style: TextStyle(fontSize: 12, color: PrimeColor.white54),
+              ),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -609,16 +807,26 @@ class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
                     ChoiceChip(
                       label: Text(scene),
                       selected: _scenes.contains(scene),
-                      onSelected: (v) => setState(() => v ? _scenes.add(scene) : _scenes.remove(scene)),
+                      onSelected: (v) => setState(
+                        () => v ? _scenes.add(scene) : _scenes.remove(scene),
+                      ),
                       selectedColor: PrimeColor.white,
                       backgroundColor: PrimeColor.white06,
-                      labelStyle: TextStyle(fontSize: 11, color: _scenes.contains(scene) ? PrimeColor.black : PrimeColor.white54),
+                      labelStyle: TextStyle(
+                        fontSize: 11,
+                        color: _scenes.contains(scene)
+                            ? PrimeColor.black
+                            : PrimeColor.white54,
+                      ),
                       side: BorderSide.none,
                     ),
                 ],
               ),
               const SizedBox(height: 16),
-              const Text('偏好胶片系列', style: TextStyle(fontSize: 12, color: PrimeColor.white54)),
+              const Text(
+                '偏好胶片系列',
+                style: TextStyle(fontSize: 12, color: PrimeColor.white54),
+              ),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -628,10 +836,17 @@ class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
                     ChoiceChip(
                       label: Text(series),
                       selected: _series.contains(series),
-                      onSelected: (v) => setState(() => v ? _series.add(series) : _series.remove(series)),
+                      onSelected: (v) => setState(
+                        () => v ? _series.add(series) : _series.remove(series),
+                      ),
                       selectedColor: PrimeColor.white,
                       backgroundColor: PrimeColor.white06,
-                      labelStyle: TextStyle(fontSize: 11, color: _series.contains(series) ? PrimeColor.black : PrimeColor.white54),
+                      labelStyle: TextStyle(
+                        fontSize: 11,
+                        color: _series.contains(series)
+                            ? PrimeColor.black
+                            : PrimeColor.white54,
+                      ),
                       side: BorderSide.none,
                     ),
                 ],
@@ -644,7 +859,10 @@ class _FilterPrefsSheetState extends State<_FilterPrefsSheet> {
                     widget.onSave(_scenes.toList(), _series.toList());
                     Navigator.of(context).pop();
                   },
-                  style: FilledButton.styleFrom(backgroundColor: PrimeColor.white, foregroundColor: PrimeColor.black),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: PrimeColor.white,
+                    foregroundColor: PrimeColor.black,
+                  ),
                   child: const Text('保存偏好'),
                 ),
               ),
@@ -678,41 +896,91 @@ class GuidePage extends StatelessWidget {
           icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: const Text('使用引导', style: TextStyle(fontSize: 17, color: PrimeColor.white, fontWeight: FontWeight.w600)),
+        title: const Text(
+          '使用引导',
+          style: TextStyle(
+            fontSize: 17,
+            color: PrimeColor.white,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(22, 8, 22, 40),
         children: [
-          const Text('把手机当成一台\n有摄影指导的相机', style: TextStyle(fontSize: 26, height: 1.14, color: PrimeColor.white, fontWeight: FontWeight.w600)),
+          const Text(
+            '把手机当成一台\n有摄影指导的相机',
+            style: TextStyle(
+              fontSize: 26,
+              height: 1.14,
+              color: PrimeColor.white,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
           const SizedBox(height: 8),
-          const Text('5 步，第一次拍也能得到一张能发出去的图。', style: TextStyle(fontSize: 12, color: PrimeColor.white38)),
+          const Text(
+            '5 步，第一次拍也能得到一张能发出去的图。',
+            style: TextStyle(fontSize: 12, color: PrimeColor.white38),
+          ),
           const SizedBox(height: 26),
           for (final step in steps) ...[
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(step.$1, style: const TextStyle(fontSize: 12, color: Color(0xFF7ECFC8), fontWeight: FontWeight.w700)),
+                Text(
+                  step.$1,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF7ECFC8),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(step.$2, style: const TextStyle(fontSize: 15, color: PrimeColor.white, fontWeight: FontWeight.w600)),
+                      Text(
+                        step.$2,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          color: PrimeColor.white,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                       const SizedBox(height: 5),
-                      Text(step.$3, style: const TextStyle(fontSize: 12, height: 1.55, color: PrimeColor.white54)),
+                      Text(
+                        step.$3,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          height: 1.55,
+                          color: PrimeColor.white54,
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 22),
-            if (step != steps.last) const Divider(color: PrimeColor.white06, height: 1),
+            if (step != steps.last)
+              const Divider(color: PrimeColor.white06, height: 1),
             const SizedBox(height: 22),
           ],
           Container(
             padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(color: PrimeColor.white06, borderRadius: BorderRadius.circular(14)),
-            child: const Text('小提示：如果 AI 一直找不到主体，长按画面把主体锁在框里。', style: TextStyle(fontSize: 11, height: 1.6, color: PrimeColor.white54)),
+            decoration: BoxDecoration(
+              color: PrimeColor.white06,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Text(
+              '小提示：如果 AI 一直找不到主体，长按画面把主体锁在框里。',
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.6,
+                color: PrimeColor.white54,
+              ),
+            ),
           ),
         ],
       ),

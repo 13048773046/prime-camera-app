@@ -19,7 +19,14 @@ void main() {
     await tester.pump();
     expect(CameraPrefs.instance.livePhoto, isTrue);
 
-    for (final label in ['AI 多景别构图', 'AI 构图停留确认', '降噪优化', '水印和边框', '问题诊断', '关于 PRIME']) {
+    for (final label in [
+      'AI 多景别构图',
+      'AI 构图停留确认',
+      '降噪优化',
+      '水印和边框',
+      '问题诊断',
+      '关于 PRIME',
+    ]) {
       await tester.scrollUntilVisible(find.text(label), 260);
     }
   });

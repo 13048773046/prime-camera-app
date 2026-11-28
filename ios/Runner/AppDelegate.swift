@@ -39,6 +39,9 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private var visionBusy = false
   private var lastVisionAt: CFTimeInterval = 0
   private var lastFrameNoticeAt: CFTimeInterval = 0
+  private var lastPoseAt: CFTimeInterval = 0
+  private var lastAction: String?
+  private var lastActionConfidence: Double = 0
   private let motionManager = CMMotionManager()
   private let motionLock = NSLock()
   private var rollDegrees: Double = 0
@@ -208,6 +211,26 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     case "setExposure":
       let value = (call.arguments as? [String: Any])?["value"] as? NSNumber
       setExposure(CGFloat(truncating: value ?? 0), result: result)
+    case "saveSession":
+      let args = call.arguments as? [String: Any]
+      let defaults = UserDefaults.standard
+      defaults.set(args?["token"] as? String, forKey: "prime.session.token")
+      defaults.set(args?["phone"] as? String, forKey: "prime.session.phone")
+      defaults.set(args?["name"] as? String, forKey: "prime.session.name")
+      result(nil)
+    case "loadSession":
+      let defaults = UserDefaults.standard
+      result([
+        "token": defaults.string(forKey: "prime.session.token") ?? "",
+        "phone": defaults.string(forKey: "prime.session.phone") ?? "",
+        "name": defaults.string(forKey: "prime.session.name") ?? ""
+      ])
+    case "clearSession":
+      let defaults = UserDefaults.standard
+      defaults.removeObject(forKey: "prime.session.token")
+      defaults.removeObject(forKey: "prime.session.phone")
+      defaults.removeObject(forKey: "prime.session.name")
+      result(nil)
     case "takePhoto":
       let args = call.arguments as? [String: Any]
       let flash = args?["flash"] as? Bool ?? false
@@ -658,6 +681,37 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       face = nil
     }
 
+    // 在人体框内继续做骨架识别：Doka 的动作提示不是只看“有没有人”，
+    // 而是把肩、肘、腕、髋、膝、踝的相对位置翻译成站立/行走/举手等状态。
+    var action: String?
+    var actionConfidence: Double = 0
+    if human != nil {
+      let poseNow = CACurrentMediaTime()
+      if poseNow - lastPoseAt >= 0.40 {
+        lastPoseAt = poseNow
+        do {
+          let poseRequest = VNDetectHumanBodyPoseRequest()
+          try handler.perform([poseRequest])
+          if let pose = poseRequest.results?.max(by: { poseSpan($0) < poseSpan($1) }) {
+            let result = detectAction(pose)
+            lastAction = result.0
+            lastActionConfidence = result.1
+          } else {
+            lastAction = nil
+            lastActionConfidence = 0
+          }
+        } catch {
+          lastAction = nil
+          lastActionConfidence = 0
+        }
+      }
+      action = lastAction
+      actionConfidence = lastActionConfidence
+    } else {
+      lastAction = nil
+      lastActionConfidence = 0
+    }
+
     var salient: VNSaliencyImageObservation?
     var salientObject: VNRectangleObservation?
     do {
@@ -693,12 +747,78 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       roll: roll,
       pitch: pitch,
       orientedWidth: orientedWidth,
-      orientedHeight: orientedHeight
+      orientedHeight: orientedHeight,
+      action: action,
+      actionConfidence: actionConfidence
     )
   }
 
   private func area(of rect: CGRect) -> CGFloat {
     rect.width * rect.height
+  }
+
+  private func poseSpan(_ observation: VNHumanBodyPoseObservation) -> CGFloat {
+    guard let points = try? observation.recognizedPoints(.all) else { return 0 }
+    let usable = points.values.filter { $0.confidence > 0.2 }.map { $0.location }
+    guard let minX = usable.map({ $0.x }).min(),
+          let maxX = usable.map({ $0.x }).max(),
+          let minY = usable.map({ $0.y }).min(),
+          let maxY = usable.map({ $0.y }).max() else { return 0 }
+    return (maxX - minX) * (maxY - minY)
+  }
+
+  /// Vision 的关节坐标是左下原点；这里换成左上原点，再判断动作。
+  private func detectAction(_ observation: VNHumanBodyPoseObservation) -> (String, Double) {
+    guard let recognized = try? observation.recognizedPoints(.all) else {
+      return ("standing", 0)
+    }
+    func point(_ joint: VNHumanBodyPoseObservation.JointName) -> CGPoint? {
+      guard let p = recognized[joint], p.confidence > 0.22 else { return nil }
+      return CGPoint(x: p.location.x, y: 1.0 - p.location.y)
+    }
+    let lw = point(.leftWrist), rw = point(.rightWrist)
+    let le = point(.leftElbow), re = point(.rightElbow)
+    let ls = point(.leftShoulder), rs = point(.rightShoulder)
+    let lh = point(.leftHip), rh = point(.rightHip)
+    let lk = point(.leftKnee), rk = point(.rightKnee)
+    let la = point(.leftAnkle), ra = point(.rightAnkle)
+    let nose = point(.nose)
+
+    var samples: [CGPoint] = []
+    [lw, rw, le, re, ls, rs, lh, rh, lk, rk, la, ra, nose].forEach { if let p = $0 { samples.append(p) } }
+    guard !samples.isEmpty else { return ("standing", 0) }
+    let confidence = Double(samples.count) / 13.0
+
+    // 双手举过肩/头：街拍里最常见的“帮我拍一张”动作。
+    if let lw = lw, let ls = ls, let rw = rw, let rs = rs,
+       (lw.y < ls.y - 0.04 && rw.y < rs.y - 0.04) {
+      return ("arms_up", confidence)
+    }
+    // 手落在髋部附近，判断为叉腰；要求腕和髋都可见。
+    if let lw = lw, let lh = lh,
+       hypot(lw.x - lh.x, lw.y - lh.y) < 0.10 {
+      return ("hands_on_hips", confidence)
+    }
+    if let rw = rw, let rh = rh,
+       hypot(rw.x - rh.x, rw.y - rh.y) < 0.10 {
+      return ("hands_on_hips", confidence)
+    }
+    // 肩线倾斜超过约 18°：人像在靠墙/倚靠时给“回正”提示。
+    if let ls = ls, let rs = rs {
+      let dx = abs(rs.x - ls.x)
+      let dy = abs(rs.y - ls.y)
+      if dx > 0.08, Double(atan2(dy, dx)) * 180 / Double.pi > 18 {
+        return ("leaning", confidence)
+      }
+    }
+    // 左右脚/膝在画面横向拉开，说明正在迈步；只做提示，不替代构图。
+    if let la = la, let ra = ra, abs(la.x - ra.x) > 0.09 {
+      return ("walking", confidence)
+    }
+    if let lk = lk, let rk = rk, abs(lk.x - rk.x) > 0.10 {
+      return ("walking", confidence)
+    }
+    return ("standing", confidence)
   }
 
   /// Vision 的 boundingBox 是左下原点；转成 Flutter 左上原点，保留整幅。
@@ -717,7 +837,9 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     roll: Double,
     pitch: Double,
     orientedWidth: Int,
-    orientedHeight: Int
+    orientedHeight: Int,
+    action: String?,
+    actionConfidence: Double
   ) {
     let width = Double(orientedWidth)
     let height = Double(orientedHeight)
@@ -737,6 +859,10 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     if let box = box { payload["box"] = box }
     if let face = face { payload["face"] = face }
     if let saliency = saliency { payload["saliency"] = saliency }
+    if let action = action {
+      payload["action"] = action
+      payload["actionConfidence"] = actionConfidence
+    }
     DispatchQueue.main.async { [weak self] in
       self?.channel.invokeMethod("guidance", arguments: payload)
     }
