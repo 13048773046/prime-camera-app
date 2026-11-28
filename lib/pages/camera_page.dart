@@ -136,7 +136,6 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   Timer? _zoomSendTimer;
   double? _pendingZoom;
   bool _capturing = false;
-  bool _flash = false;
   bool _flashOn = false;
   bool _ultraWideAvailable = true;
   bool _gridOn = false;
@@ -1021,11 +1020,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       );
       return;
     }
-    setState(() {
-      _capturing = true;
-      _flash = true;
-    });
-    // 按下快门立刻给声/触/白闪，不等原生照片回调。
+    setState(() => _capturing = true);
+    // 按下快门只给声音和触感，不铺全屏白闪，避免取景画面被白色盖一下。
     SystemSound.play(SystemSoundType.click);
     HapticFeedback.mediumImpact();
     final path = await _camera.takePhoto(
@@ -1044,10 +1040,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     await Future.delayed(const Duration(milliseconds: 80));
     if (!mounted) return;
     if (path == null || path.isEmpty) {
-      setState(() {
-        _flash = false;
-        _capturing = false;
-      });
+      setState(() => _capturing = false);
       _showPrompt('拍摄失败', '相机没有返回照片，请重试', 2400);
       return;
     }
@@ -1055,10 +1048,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     if (_filterId != 'none') {
       CameraPrefs.instance.recordFilterShot(_filterId);
     }
-    setState(() {
-      _flash = false;
-      _capturing = false;
-    });
+    setState(() => _capturing = false);
     await Navigator.of(context).push(
       PageRouteBuilder(
         transitionDuration: const Duration(milliseconds: 420),
@@ -1279,12 +1269,6 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
           fit: StackFit.expand,
           children: [
             _buildFramedLayout(),
-            if (_flash)
-              const Positioned.fill(
-                child: IgnorePointer(
-                  child: ColoredBox(color: Color(0xF2FFFFFF)),
-                ),
-              ),
             if (_status == CameraStatus.permissionDenied)
               Positioned.fill(child: _buildPermissionCard()),
           ],
