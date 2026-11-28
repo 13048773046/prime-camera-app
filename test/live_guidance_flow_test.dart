@@ -4,12 +4,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:prime_camera/pages/camera_page.dart';
 import 'package:prime_camera/services/camera_service.dart';
 import 'package:prime_camera/services/guidance.dart';
+import 'package:prime_camera/widgets/guide_ring.dart';
 
-/// 端到端（Dart 侧）验证：原生 guidance 消息 → CameraService 流 → 页面口令。
+/// 端到端（Dart 侧）验证：原生 guidance 消息 → CameraService 流 → Doka 覆盖层。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('原生推送识别帧后，取景页实时口令替换分析中', (tester) async {
+  testWidgets('原生推送识别帧后主体框跟随，移动手机时目标环原点同步移动', (tester) async {
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -39,12 +40,13 @@ void main() {
       ),
     );
     await tester.pump(const Duration(milliseconds: 300));
-    // 默认是通用场景，先显示流小萤的开场提示。
-    expect(find.text('你好，我是流小萤'), findsOneWidget);
-    expect(find.text('正在看你的画面和光线'), findsOneWidget);
+    // Doka 空闲态：不播放开场白，也不画目标环。
+    expect(find.text('AI正在分析画面'), findsNothing);
+    expect(find.byType(GuideOverlay), findsNothing);
 
-    await tester.pump(const Duration(milliseconds: 2000));
-    expect(find.text('看好了'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('ai-compose')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('AI正在分析画面'), findsOneWidget);
 
     final codec = const StandardMethodCodec();
     await messenger.handlePlatformMessage(
@@ -65,12 +67,11 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('构图已锁定'), findsOneWidget);
-    expect(find.text('可以按快门'), findsOneWidget);
-    expect(find.text('切换构图方案'), findsOneWidget);
+    expect(find.text('请对准彩色圆环'), findsOneWidget);
+    final first = tester.widget<GuideOverlay>(find.byType(GuideOverlay));
+    final firstCenterX = first.subjectBox[0] + first.subjectBox[2] / 2;
 
-    // 用户往一个方向移动手机后，主体框变化，口令必须跟着变；
-    // 这是“移动位置没反应”的回归测试：不能一直停在上一条口令。
+    // 用户往左移动手机后，主体框必须跟着原生新框走。
     await messenger.handlePlatformMessage(
       channel.name,
       codec.encodeMethodCall(
@@ -89,8 +90,8 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('小萤建议'), findsOneWidget);
-    expect(find.textContaining('手机往左带'), findsOneWidget);
-    expect(find.text('构图已锁定'), findsNothing);
+    final second = tester.widget<GuideOverlay>(find.byType(GuideOverlay));
+    final secondCenterX = second.subjectBox[0] + second.subjectBox[2] / 2;
+    expect(secondCenterX, lessThan(firstCenterX - 0.05));
   });
 }

@@ -5,11 +5,11 @@ import 'package:prime_camera/services/camera_service.dart';
 import 'package:prime_camera/services/guidance.dart';
 import 'package:prime_camera/widgets/guide_ring.dart';
 
-/// 演示模式：不依赖原生相机，验证黑白取景页的排版与状态。
+/// 演示模式：不依赖原生相机，验证 Doka 相机页的排版与状态。
 CameraService _demoCamera() => CameraService(forceDemo: true);
 
 void main() {
-  testWidgets('取景页按 3:4 满宽排布，提示会收走，拍法和比例可切换', (tester) async {
+  testWidgets('Doka 1.3.20 相机页：空闲 5 选项、构图态 3 选项、3:4 满宽取景', (tester) async {
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -24,31 +24,32 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.text('你好，我是流小萤'), findsOneWidget);
-    expect(find.text('正在看你的画面和光线'), findsOneWidget);
     expect(find.byKey(const ValueKey('shutter')), findsOneWidget);
-
-    // 宽度必须铺满 390，高度按 3:4 限制在 520；不是 9:16 全屏。
-    expect(tester.getSize(find.byType(GuideOverlay)), const Size(390, 520));
-    expect(find.text('3:4'), findsOneWidget);
-
-    // 2–3 秒后分析提示自动收走，只留下取景和构图入口。
-    await tester.pump(const Duration(milliseconds: 2300));
-    expect(find.text('你好，我是流小萤'), findsNothing);
-    expect(find.text('切换构图方案'), findsOneWidget);
+    expect(find.byKey(const ValueKey('ai-compose')), findsOneWidget);
     expect(find.byKey(const ValueKey('ratio-button')), findsOneWidget);
+    expect(find.text('AI正在分析画面'), findsNothing);
+    // 空闲态不自动扫，不出现 Doka 的分析 HUD。
+    expect(find.text('AI构图'), findsNothing);
+    expect(find.text('退出构图'), findsNothing);
 
-    // 测试直接给人像初始场景；真实页面由自动场景识别决定。
-    await tester.tap(find.byKey(const ValueKey('plan-button')));
+    // Doka 空闲态不显示目标环/扫描层。
+    expect(find.byType(GuideOverlay), findsNothing);
+
+    // 点 AI 构图：进入 Doka 分析态，HUD 原文 + 扫描层。
+    await tester.tap(find.byKey(const ValueKey('ai-compose')));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
-    expect(find.text('小萤的 3 种拍法'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('AI正在分析画面'), findsOneWidget);
+    expect(find.text('请稳住手机，不要移动'), findsOneWidget);
+    // 预览左右各留 12dp，3:4 高度 = 366 * 4/3。
+    expect(tester.getSize(find.byType(GuideOverlay)), const Size(366, 488));
 
-    await tester.tap(find.text('2  七分身'));
-    await tester.pump(const Duration(milliseconds: 500));
-    expect(find.text('切换构图方案'), findsOneWidget);
+    // 2 秒后拿到构图结果，HUD 切成“请对准彩色圆环”，选项行收成 3 个。
+    await tester.pump(const Duration(milliseconds: 1900));
+    expect(find.text('请对准彩色圆环'), findsOneWidget);
+    expect(find.text('取消'), findsOneWidget);
 
-    // 比例可以自己设：切到 1:1 后取景层变成 390×390。
+    // 比例可切：1:1 后取景层变成 366×366。
     await tester.tap(find.byKey(const ValueKey('ratio-button')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
@@ -56,6 +57,6 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('ratio-oneOne')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
-    expect(tester.getSize(find.byType(GuideOverlay)), const Size(390, 390));
+    expect(tester.getSize(find.byType(GuideOverlay)), const Size(366, 366));
   });
 }

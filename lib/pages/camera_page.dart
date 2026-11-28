@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,6 +18,7 @@ import '../widgets/palette_sheet.dart';
 import '../widgets/subject_box_editor.dart';
 import '../widgets/zoom_dial.dart';
 import '../widgets/guide_ring.dart';
+import '../widgets/doka_ai_overlay.dart';
 import 'gallery_page.dart';
 import 'mine_page.dart';
 import 'result_page.dart';
@@ -141,14 +141,16 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   bool _ultraWideAvailable = true;
   bool _gridOn = false;
   bool _planSheetOpen = false;
+  int _planIndex = 0;
+  bool _subjectHintVisible = false;
+  bool _showAiFilterTip = false;
+  Timer? _aiFilterTipTimer;
+  Timer? _subjectHintTimer;
   ComposeResult? _guide;
   Timer? _alignTimer;
   Timer? _analyzeTimer;
   Timer? _frameWatchdog;
   Timer? _promptTimer;
-  Timer? _distanceTimer;
-  bool _distanceCardOpen = false;
-  bool _distanceCardDismissed = false;
   StreamSubscription<GuidanceFrame>? _guidanceSub;
   StreamSubscription<CameraFrameTick>? _frameSub;
   final LiveComposer _composer = const LiveComposer();
@@ -157,6 +159,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   bool _scanInFlight = false;
   List<double>? _serverCrop;
   List<double>? _lockedSubjectBox;
+  List<double>? _stableSubjectBox;
+  int _stableSubjectTs = 0;
   double _exposure = 0.0;
   bool _showExposure = false;
   Timer? _exposureTimer;
@@ -180,12 +184,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   String? _promptSubtitle;
   String? _lastActionLabel;
   String? _actionLabel;
-  double _actionConfidence = 0;
   DateTime? _lastAutoZoomAt;
   bool _autoZoomBusy = false;
 
   static const List<double> _zoomValues = [0.5, 1.0, 2.0, 5.0, 10.0];
-  static const List<String> _zoomLabels = ['.5', '1x', '2', '5', '10'];
+  static const List<String> _zoomLabels = ['.5x', '1x', '2x', '5x', '10x'];
 
   static const List<_ShotPlan> _plans = [
     _ShotPlan(
@@ -314,11 +317,12 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     _frameSub?.cancel();
     _scanTimer?.cancel();
     _promptTimer?.cancel();
-    _distanceTimer?.cancel();
     _exposureTimer?.cancel();
     _alignConfirmTimer?.cancel();
     _zoomDialTimer?.cancel();
     _zoomSendTimer?.cancel();
+    _aiFilterTipTimer?.cancel();
+    _subjectHintTimer?.cancel();
     super.dispose();
   }
 
@@ -331,11 +335,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   }
 
   _ShotPlan get _activePlan {
-    if (_zoomIndex >= 4) return _currentPlans.last;
-    for (final plan in _currentPlans) {
-      if (plan.index == _zoomIndex) return plan;
-    }
-    return _currentPlans.first;
+    final plans = _currentPlans;
+    return plans[_planIndex.clamp(0, plans.length - 1)];
   }
 
   String get _subjectLabel {
@@ -365,25 +366,34 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _statusMessage = init.message;
       _ultraWideAvailable = init.ultraWide;
       _live = init.status == CameraStatus.ready;
-      _analyzing =
-          init.status == CameraStatus.ready || init.status == CameraStatus.demo;
+      _composeEnabled = false;
+      _analyzing = false;
       _guide = null;
       _lockedSubjectBox = null;
       _aligned = false;
       _alignProgress = 0.12;
     });
     if (_live) {
-      _startLiveGuidance();
-    } else if (init.status == CameraStatus.demo) {
-      _startDemoAnalysis();
+      _startPreviewStreams();
     } else if (init.status == CameraStatus.unavailable) {
       setState(() => _analyzing = false);
     }
   }
 
+  /// Doka 相机空闲态不扫描、不显示目标环；只保持预览与帧心跳。
+  void _startPreviewStreams() {
+    _guidanceSub?.cancel();
+    _frameSub?.cancel();
+    _lastFrameTs = 0;
+    _guidanceSub = _camera.guidanceStream.listen(_onGuidanceFrame);
+    _frameSub = _camera.frameStream.listen((tick) {
+      _lastFrameTs = tick.ts;
+    });
+    _startFrameWatchdog();
+  }
+
   void _startDemoAnalysis() {
     _alignTimer?.cancel();
-    _resetDistanceCard();
     _analyzeTimer?.cancel();
     setState(() {
       _composeEnabled = true;
@@ -394,11 +404,10 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _alignProgress = 0.12;
       _lastActionLabel = null;
     });
-    _showPrompt('你好，我是流小萤', '正在看你的画面和光线', 2400);
     _analyzeTimer = Timer(const Duration(milliseconds: 1800), () {
       if (!mounted) return;
       setState(() => _analyzing = false);
-      _showPrompt('看好了', '选一个拍法，我带你对准主体', 2000);
+      _showPrompt('请对准彩色圆环', '跟随引导线移动手机', 2200);
       _startCommandCycle();
     });
   }
@@ -420,92 +429,92 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     });
   }
 
-  void _resetDistanceCard() {
-    _distanceTimer?.cancel();
-    _distanceCardOpen = false;
-    _distanceCardDismissed = false;
-  }
-
-  void _maybeShowDistanceCard(ComposeResult guide) {
-    if (!mounted || _distanceCardOpen || _distanceCardDismissed) return;
-    if (_analyzing || guide.distanceMeters == null || guide.confidence <= 0) {
-      return;
-    }
-    if (_status != CameraStatus.ready && _status != CameraStatus.demo) return;
-    setState(() => _distanceCardOpen = true);
-    _distanceTimer?.cancel();
-    _distanceTimer = Timer(const Duration(seconds: 7), () {
-      if (mounted) setState(() => _distanceCardOpen = false);
-    });
-  }
-
-  void _dismissDistanceCard({bool start = false}) {
-    _distanceTimer?.cancel();
-    if (!mounted) return;
-    setState(() {
-      _distanceCardOpen = false;
-      _distanceCardDismissed = true;
-    });
-    if (start) {
-      final plan = _activePlan;
-      final placement = plan.targetCenterX < 0.45
-          ? '左三分'
-          : (plan.targetCenterX > 0.58 ? '右三分' : '中间');
-      _showPrompt('开始构图', '把主体放进$placement的黄色目标环', 2200);
-    }
-  }
-
   void _startLiveGuidance() {
-    _resetDistanceCard();
-    _guidanceSub?.cancel();
-    _frameSub?.cancel();
     _scanTimer?.cancel();
-    _frameWatchdog?.cancel();
     _alignTimer?.cancel();
     _analyzeTimer?.cancel();
+    _subjectHintTimer?.cancel();
     _lastGuidanceTs = 0;
-    _lastFrameTs = 0;
     _restartAttempts = 0;
     _serverCrop = null;
     _scanInFlight = false;
     _wasAligned = false;
+    _stableSubjectBox = null;
+    _stableSubjectTs = 0;
     setState(() {
       _composeEnabled = true;
       _analyzing = true;
       _guide = null;
       _lockedSubjectBox = null;
+      _subjectHintVisible = false;
       _aligned = false;
       _alignProgress = 0.12;
       _lastActionLabel = null;
+      _planIndex = 0;
+      _showAiFilterTip = false;
     });
-    _showPrompt('你好，我是流小萤', '正在看你的画面和光线', 2500);
+    if (_guidanceSub == null) _startPreviewStreams();
     _startScanLoop();
-    _guidanceSub = _camera.guidanceStream.listen(_onGuidanceFrame);
-    _frameSub = _camera.frameStream.listen((tick) {
-      _lastFrameTs = tick.ts;
-    });
-    _startFrameWatchdog();
-    // 原生首帧约 100–300ms；先留 1.8 秒“稳住手机”的分析态。
+    // Doka 的分析态：HUD 由 `_analyzing` 驱动，分析期间不显示拍法提示。
     _analyzeTimer = Timer(const Duration(milliseconds: 1800), () {
       if (!mounted) return;
-      setState(() => _analyzing = false);
-      if (_guide == null || !_isAlignedGuide(_guide!)) {
-        _showPrompt('看好了', '选一个拍法，我带你对准主体', 2000);
+      if (_guide != null) {
+        setState(() => _analyzing = false);
+        return;
       }
+      // 扫描请求还没回来时继续显示分析 HUD / 扫描动画；
+      // 4 秒兜底，避免网络卡住后界面永远停在“分析中”。
+      _analyzeTimer = Timer(const Duration(milliseconds: 2200), () {
+        if (!mounted) return;
+        setState(() => _analyzing = false);
+        _showPrompt('请对准彩色圆环', '跟随引导线移动手机', 2200);
+      });
     });
   }
 
   /// Doka 是“客户端抓帧 → 服务端 scan 给方案 → 客户端跟踪”。
-  /// 这里保留同样的时序，但只有配置了 PRIME_API_BASE 才发请求；
-  /// 没有后端时端侧 Vision 仍然独立工作，不会出现空转或卡顿。
+  /// AI 构图只抓一帧分析；分析结束后不再每 1.6 秒重复请求。
   void _startScanLoop() {
     _scanTimer?.cancel();
     _serverCrop = null;
     _lastServerReason = '';
     if (!_scanApi.enabled) return;
-    _scanTimer = Timer.periodic(const Duration(milliseconds: 1600), (_) {
-      _scanCurrentFrame();
-    });
+    _scanTimer = Timer(const Duration(milliseconds: 500), _scanCurrentFrame);
+  }
+
+  /// 原生 Vision / 后端返回的是完整 9:16 画幅坐标，Flutter 只显示中间
+  /// 3:4 预览。这里把全画幅框映射到预览归一化坐标；否则主体框/目标环会
+  /// 整体偏上，出现“框不跟着人走”的错觉。
+  List<double> _toPreviewBox(List<double> box) {
+    if (box.length != 4) return box;
+    final visibleY = 0.5625 * _ratio.heightOverWidth;
+    if (visibleY >= 0.999) return box;
+    final offsetY = (1 - visibleY) / 2;
+    final x = box[0].clamp(0.0, 1.0);
+    final y = ((box[1] - offsetY) / visibleY).clamp(0.0, 1.0);
+    final w = box[2].clamp(0.0, 1.0 - x);
+    final h = (box[3] / visibleY).clamp(0.0, 1.0 - y);
+    return [x, y, w, h];
+  }
+
+  List<double> _previewToFullBox(List<double> box) {
+    final visibleY = 0.5625 * _ratio.heightOverWidth;
+    if (visibleY >= 0.999) return List<double>.of(box);
+    final offsetY = (1 - visibleY) / 2;
+    return [
+      box[0],
+      (offsetY + box[1] * visibleY).clamp(0.0, 1.0),
+      box[2],
+      (box[3] * visibleY).clamp(0.02, 1.0),
+    ];
+  }
+
+  /// 服务端拿到的 scan 帧是完整 9:16 画幅，手动主体框却是 3:4 预览坐标；
+  /// 这里做一次 cover 映射，避免后端按错位置裁主体。
+  List<double>? _subjectBoxForServer() {
+    final locked = _lockedSubjectBox;
+    if (locked == null || locked.length != 4) return _guide?.subjectBox;
+    return _previewToFullBox(locked);
   }
 
   Future<void> _scanCurrentFrame() async {
@@ -520,7 +529,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         zoom: _zoom,
         tilt: _lastPitch,
         roll: _lastRoll,
-        subjectBox: _lockedSubjectBox ?? _guide?.subjectBox,
+        subjectBox: _subjectBoxForServer(),
         subjectKind: _scene == SceneMode.portrait ? 'person' : 'object',
         aiFilterPreferences: jsonEncode({
           'scenes': CameraPrefs.instance.preferredScenes,
@@ -536,11 +545,19 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         _recommendedFilterName = plan.filterName;
         _recommendedFilterId = plan.filterId;
       });
+      // Doka `tvAiFilterTip`：扫完给 AI 滤镜建议，3.2 秒后收起。
+      if (plan.filterName.isNotEmpty && plan.filterId != 'none') {
+        _aiFilterTipTimer?.cancel();
+        setState(() => _showAiFilterTip = true);
+        _aiFilterTipTimer = Timer(const Duration(milliseconds: 3200), () {
+          if (mounted) setState(() => _showAiFilterTip = false);
+        });
+      }
       if (!_aligned &&
           plan.reason.isNotEmpty &&
           plan.reason != _lastServerReason) {
         _lastServerReason = plan.reason;
-        _showPrompt('小萤看过画面', plan.reason, 1900);
+        _showPrompt('请对准彩色圆环', plan.reason, 2200);
       }
     } finally {
       _scanInFlight = false;
@@ -567,8 +584,79 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     });
   }
 
-  void _onGuidanceFrame(GuidanceFrame frame) {
+  /// 原生已经做了连续性选人；这里再补一层“手动主体优先 + 时间平滑”，
+  /// 避免同一帧里换人、或 5–6fps 的人体框带着目标环抖动。
+  GuidanceFrame _stableGuidance(GuidanceFrame raw) {
+    var box = raw.box;
+    final locked = _lockedSubjectBox;
+    final lockedFull = locked == null ? null : _previewToFullBox(locked);
+    if (lockedFull != null) {
+      // 用户手动指定的主体优先；原生检测到的人只在框内/附近时才接管，
+      // 否则长按一个物体后主体框会被旁边的人抢走。
+      box = lockedFull;
+    }
+    if (locked != null && raw.candidates.isNotEmpty) {
+      final visibleY = 0.5625 * _ratio.heightOverWidth;
+      final offsetY = (1 - visibleY) / 2;
+      final lx = locked[0] + locked[2] / 2;
+      final ly = offsetY + (locked[1] + locked[3] / 2) * visibleY;
+      List<double>? best;
+      var bestDistance = double.infinity;
+      for (final candidate in raw.candidates) {
+        if (candidate.length != 4) continue;
+        final cx = candidate[0] + candidate[2] / 2;
+        final cy = candidate[1] + candidate[3] / 2;
+        final d = math.pow(cx - lx, 2) + math.pow(cy - ly, 2);
+        if (d < bestDistance) {
+          bestDistance = d.toDouble();
+          best = candidate;
+        }
+      }
+      if (best != null) {
+        final cx = best[0] + best[2] / 2;
+        final cy = best[1] + best[3] / 2;
+        final inside =
+            lockedFull != null &&
+            cx >= lockedFull[0] &&
+            cx <= lockedFull[0] + lockedFull[2] &&
+            cy >= lockedFull[1] &&
+            cy <= lockedFull[1] + lockedFull[3];
+        // bestDistance 是归一化平方距离：0.008 约等于 0.09 的画幅距离，
+        // 只允许离手动框很近的人接管，避免长按物体后被旁边的人抢走。
+        if (inside || bestDistance < 0.008) box = best;
+      }
+    }
+
+    if (box != null && box.length == 4) {
+      final previous = _stableSubjectBox;
+      final fresh = raw.ts - _stableSubjectTs > 700;
+      final next = (previous == null || fresh || previous.length != 4)
+          ? List<double>.of(box)
+          : _lerpRect(previous, box, 0.38);
+      _stableSubjectBox = next;
+      _stableSubjectTs = raw.ts;
+      return raw.copyWith(box: next);
+    }
+
+    // 短暂丢失（<650ms）时保留上一帧，避免目标环瞬间消失又跳回来。
+    if (_stableSubjectBox != null && raw.ts - _stableSubjectTs < 650) {
+      return raw.copyWith(box: _stableSubjectBox);
+    }
+    return raw;
+  }
+
+  List<double> _lerpRect(List<double> a, List<double> b, double t) {
+    return [
+      a[0] + (b[0] - a[0]) * t,
+      a[1] + (b[1] - a[1]) * t,
+      a[2] + (b[2] - a[2]) * t,
+      a[3] + (b[3] - a[3]) * t,
+    ];
+  }
+
+  void _onGuidanceFrame(GuidanceFrame rawFrame) {
     if (!mounted || !_live || !_composeEnabled) return;
+    final frame = _stableGuidance(rawFrame);
     _lastFrameTs = math.max(_lastFrameTs, frame.ts);
     _lastRoll = frame.roll;
     _lastPitch = frame.pitch;
@@ -603,23 +691,21 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     final confirm = CameraPrefs.instance.alignmentConfirm;
     setState(() {
       _guide = guide;
+      if (guide.confidence > 0 || guide.subjectBox.length == 4) {
+        _analyzing = false;
+      }
       _alignProgress = newlyAligned ? 1.0 : guide.progress;
       if (!newlyAligned) _aligned = false;
     });
 
-    // 动作识别来自原生 Vision 的 17 点人体骨架；只在状态变化时提示，
-    // 避免每一帧都弹一次“站立/行走”，把取景画面吵乱。
+    // 动作识别仍保留给调试/辅助信息，但不再用 Doka 没有的“动作 chip”打扰取景。
     final nextAction = CameraPrefs.instance.actionRecognition
         ? frame.actionLabel
         : null;
     if (nextAction != _actionLabel) {
       setState(() {
         _actionLabel = nextAction;
-        _actionConfidence = frame.actionConfidence;
       });
-      if (nextAction != null && !_analyzing) {
-        _showPrompt('动作识别', '识别到$nextAction，构图口令已同步', 1300);
-      }
     }
 
     if (CameraPrefs.instance.autoZoom) {
@@ -637,14 +723,13 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _alignConfirmTimer?.cancel();
       setState(() => _aligned = newlyAligned);
     }
-    _maybeShowDistanceCard(guide);
     if (newlyAligned && !_wasAligned) {
       HapticFeedback.lightImpact();
-      _showPrompt('构图已锁定', '可以按快门', 1500);
+      _showPrompt('已对准，保持稳定', '构图锁定后按快门', 1800);
     } else if (!_analyzing &&
         guide.confidence > 0 &&
         guide.actionLabel != _lastActionLabel) {
-      _showPrompt('小萤建议', guide.hint, 1700);
+      _showPrompt('请对准彩色圆环', '跟随引导线移动手机', 1600);
     }
     _lastActionLabel = guide.actionLabel;
     _wasAligned = newlyAligned;
@@ -697,7 +782,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       if (mounted) {
         _showPrompt(
           'AI 自动变焦',
-          '主体占比 ${(subjectH * 100).round()}% · 切到 ${_zoomLabels[nearest]}×',
+          '主体占比 ${(subjectH * 100).round()}% · 切到 ${_zoomLabels[nearest]}',
           1700,
         );
       }
@@ -796,13 +881,12 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   void _startCommandCycle() {
     if (_live || _status != CameraStatus.demo) return;
     _alignTimer?.cancel();
-    final preset = _presetFor(_zoomIndex, _scene);
+    final preset = _presetFor(_planIndex, _scene);
     setState(() {
       _guide = preset;
       _alignProgress = 0.12;
       _aligned = false;
     });
-    _maybeShowDistanceCard(preset);
     int step = 0;
     const stops = [0.34, 0.6, 0.84, 1.0];
     _alignTimer = Timer.periodic(const Duration(milliseconds: 950), (timer) {
@@ -823,7 +907,6 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   void _exitCompose() {
     _alignTimer?.cancel();
     _analyzeTimer?.cancel();
-    _distanceTimer?.cancel();
     setState(() {
       _composeEnabled = false;
       _analyzing = false;
@@ -831,11 +914,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _lockedSubjectBox = null;
       _aligned = false;
       _alignProgress = 0.12;
-      _distanceCardOpen = false;
-      _distanceCardDismissed = true;
       _lastActionLabel = null;
+      _showAiFilterTip = false;
+      _subjectHintVisible = false;
     });
-    _showPrompt('已退出构图', '自由取景，随时可以再进 AI 构图', 1700);
+    _showPrompt('AI构图已退出', '自由取景，随时可以再进 AI 构图', 1700);
   }
 
   void _startAi() {
@@ -859,8 +942,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   Future<void> _selectZoom(int index) async {
     if (index == 0 && !_ultraWideAvailable) return;
-    _resetDistanceCard();
-    if (_zoomIndex == index && (_zoom - _zoomValues[index]).abs() < 0.01) return;
+    if (_zoomIndex == index && (_zoom - _zoomValues[index]).abs() < 0.01) {
+      return;
+    }
     setState(() => _zoomIndex = index);
     // 先让演示口令立刻跟手，再等原生回报实际可用倍率。
     if (!_live && _status == CameraStatus.demo) _startCommandCycle();
@@ -928,7 +1012,8 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       return;
     }
     final activeFilter = filterById(_filterId);
-    if (activeFilter.pro && !CameraPrefs.instance.filterUnlocked(activeFilter)) {
+    if (activeFilter.pro &&
+        !CameraPrefs.instance.filterUnlocked(activeFilter)) {
       _showPrompt(
         'Pro 滤镜未解锁',
         '${activeFilter.name} 可试用取景；保存需开通 Pro，或用其他滤镜拍摄 ${activeFilter.unlockShots} 张解锁',
@@ -1109,20 +1194,25 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       isScrollControlled: true,
       builder: (sheetContext) => _PlanSheet(
         plans: _currentPlans,
-        selectedIndex: _zoomIndex,
+        selectedIndex: _planIndex,
         sceneTitle: switch (_scene) {
-          SceneMode.portrait => '小萤的 3 种拍法',
-          SceneMode.street => '街道的 3 种拍法',
-          SceneMode.landscape => '风景的 3 种拍法',
-          SceneMode.still => '静物的 3 种拍法',
-          SceneMode.general => '这个场景的 3 种拍法',
+          SceneMode.portrait => '构图方案',
+          SceneMode.street => '街道构图方案',
+          SceneMode.landscape => '风景构图方案',
+          SceneMode.still => '静物构图方案',
+          SceneMode.general => '构图方案',
         },
         sceneAsset: _status == CameraStatus.demo
             ? 'assets/demo/scene.jpg'
             : null,
         onSelect: (index) {
           Navigator.of(sheetContext).pop();
-          _selectZoom(index);
+          setState(() {
+            _planIndex = index.clamp(0, _currentPlans.length - 1);
+            _aligned = false;
+            _alignProgress = 0.12;
+          });
+          if (!_live && _status == CameraStatus.demo) _startCommandCycle();
         },
       ),
     ).whenComplete(() {
@@ -1142,7 +1232,6 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       _flashOn = CameraPrefs.instance.flash;
     });
     if (changed) {
-      _resetDistanceCard();
       if (_live) {
         _startLiveGuidance();
       } else if (_status == CameraStatus.demo) {
@@ -1199,156 +1288,230 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
-  /// 照着 Doka 相机页的结构重排：
-  /// 3:4 圆角取景窗 → 48dp 固定选项行 → 96dp 功能行 → 52dp 玻璃三栏导航。
-  /// 取景窗和功能行之间不再留一大块空白，也不再在画面里放品牌标题。
+  /// 照着 Doka 1.3.20 `fragment_camera.xml` 的结构：
+  /// 3:4 圆角取景窗 → 48dp 固定选项行 → 96dp 功能行 → 70dp 底部留白。
+  /// 没有底部三栏导航；空闲态 5 个选项，AI 构图态按 Doka 收成 3 个。
   Widget _buildFramedLayout() {
     return SafeArea(
+      top: true,
+      bottom: false,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final maxWidth = constraints.maxWidth;
           final maxHeight = constraints.maxHeight;
-          const bottomReserve = 238.0;
-          final maxStageHeight = math.max(220.0, maxHeight - bottomReserve);
-          final fullWidthHeight = maxWidth * _ratio.heightOverWidth;
-          double stageHeight = math.min(fullWidthHeight, maxStageHeight);
-          double stageWidth = stageHeight / _ratio.heightOverWidth;
-          if (stageWidth > maxWidth) {
-            stageWidth = maxWidth;
-            stageHeight = stageWidth * _ratio.heightOverWidth;
+          // Doka fragment_camera：option 48 + function 96 + bottom padding 70。
+          final bottomReserve = 48.0 + 96.0 + 12.0 + 70.0;
+          final maxPreviewHeight = math.max(180.0, maxHeight - bottomReserve);
+          // CameraMaskView：左右各留 12dp，3:4 预览在剩余区域内居中。
+          final availableWidth = math.max(120.0, maxWidth - 24);
+          var previewWidth = availableWidth;
+          var previewHeight = previewWidth * _ratio.heightOverWidth;
+          if (previewHeight > maxPreviewHeight) {
+            previewHeight = maxPreviewHeight;
+            previewWidth = previewHeight / _ratio.heightOverWidth;
           }
 
           return Column(
             children: [
-              SizedBox(
-                width: maxWidth,
-                height: stageHeight,
+              Expanded(
                 child: Center(
                   child: SizedBox(
-                    width: stageWidth,
-                    height: stageHeight,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(24),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          _buildStage(),
+                    width: previewWidth,
+                    height: previewHeight,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        if (_aligned)
                           Positioned(
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            height: 104,
-                            child: IgnorePointer(
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: [
-                                      Colors.black.withValues(alpha: 0.50),
-                                      Colors.black.withValues(alpha: 0.14),
-                                      Colors.transparent,
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
+                            left: -18,
+                            top: -18,
+                            right: -18,
+                            bottom: -18,
+                            child: const DokaGradientHalo(visible: true),
                           ),
-                          Positioned(
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            child: _buildTopBar(),
-                          ),
-                          if (_promptTitle != null)
-                            Positioned(
-                              top: 58,
-                              left: 18,
-                              right: 18,
-                              child: _buildPromptChip(),
-                            ),
-                          if (!_zoomDialOpen)
-                            Positioned(
-                              left: 0,
-                              right: 0,
-                              bottom: 10,
-                              child: _buildFocalPill(),
-                            ),
-                          if (_zoomDialOpen)
-                            Positioned(
-                              left: 0,
-                              right: 0,
-                              bottom: 6,
-                              child: Center(
-                                child: ZoomDial(
-                                  value: _zoom,
-                                  onChanged: (value) {
-                                    _openZoomDial();
-                                    _onZoomGesture(value);
-                                  },
-                                  onPreset: (value) {
-                                    _zoomDialTimer?.cancel();
-                                    _selectZoom(_nearestZoomIndex(value));
-                                    setState(() => _zoomDialOpen = false);
-                                  },
-                                  onClose: () =>
-                                      setState(() => _zoomDialOpen = false),
-                                ),
-                              ),
-                            ),
-                          Positioned(
-                            right: 12,
-                            bottom: 10,
-                            child: _buildAiFilterEntry(),
-                          ),
-                          if (_recommendedFilterId != 'none' &&
-                              _recommendedFilterId != _filterId)
-                            Positioned(
-                              right: 10,
-                              bottom: 56,
-                              child: _buildAiRecommendationChip(),
-                            ),
-                          if (_distanceCardOpen && _guide != null)
-                            Positioned(
-                              left: 30,
-                              right: 30,
-                              bottom: 58,
-                              child: TweenAnimationBuilder<double>(
-                                tween: Tween(begin: 0, end: 1),
-                                duration: const Duration(milliseconds: 340),
-                                curve: Curves.easeOutCubic,
-                                builder: (context, value, child) => Opacity(
-                                  opacity: value,
-                                  child: Transform.translate(
-                                    offset: Offset(0, 18 * (1 - value)),
-                                    child: Transform.scale(
-                                      scale: 0.96 + 0.04 * value,
-                                      child: child,
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(24),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                _buildStage(),
+                                if (!_showAiFilterTip &&
+                                    (_analyzing ||
+                                        (_guide != null && !_aligned)))
+                                  Positioned(
+                                    top: 12,
+                                    left: 48,
+                                    right: 48,
+                                    child: DokaAiHud(
+                                      title: _analyzing
+                                          ? 'AI正在分析画面'
+                                          : '请对准彩色圆环',
+                                      subtitle: _analyzing
+                                          ? '请稳住手机，不要移动'
+                                          : null,
                                     ),
                                   ),
-                                ),
-                                child: _DistanceCard(
-                                  guide: _guide!,
-                                  plan: _activePlan,
-                                  scene: _scene,
-                                  onStart: () =>
-                                      _dismissDistanceCard(start: true),
-                                  onClose: _dismissDistanceCard,
-                                ),
-                              ),
+                                if (!_analyzing && _showAiFilterTip)
+                                  Positioned(
+                                    top: 12,
+                                    left: 0,
+                                    right: 0,
+                                    child: Center(
+                                      child: DokaAiFilterTip(
+                                        lines: [
+                                          'AI推荐滤镜 · $_recommendedFilterName',
+                                          '已为你匹配当前画面光线',
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                if (_subjectHintVisible && !_analyzing)
+                                  Positioned(
+                                    top: 28,
+                                    left: 0,
+                                    right: 0,
+                                    child: Center(
+                                      child: DokaSubjectHint(
+                                        text: _lockedSubjectBox == null
+                                            ? '长按取景框，标记你想拍的对象'
+                                            : '已指定为本次 AI 构图主体\n拖动四角可调整范围',
+                                      ),
+                                    ),
+                                  ),
+                                if (!_analyzing &&
+                                    _guide == null &&
+                                    !_showAiFilterTip &&
+                                    _promptTitle != null)
+                                  Positioned(
+                                    left: 24,
+                                    right: 24,
+                                    bottom: 86,
+                                    child: Center(
+                                      child: DokaToast(
+                                        text: _promptTitle!,
+                                        subtitle: _promptSubtitle,
+                                      ),
+                                    ),
+                                  ),
+                                if (!_analyzing && !_showAiFilterTip)
+                                  Positioned(
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    child: IgnorePointer(
+                                      child: Container(
+                                        height: 96,
+                                        decoration: const BoxDecoration(
+                                          gradient: LinearGradient(
+                                            begin: Alignment.topCenter,
+                                            end: Alignment.bottomCenter,
+                                            colors: [
+                                              Color(0x4D000000),
+                                              Colors.transparent,
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                if (!_analyzing && !_showAiFilterTip)
+                                  Positioned(
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    child: _buildTopBar(),
+                                  ),
+                                if (_guide != null &&
+                                    !_analyzing &&
+                                    _currentPlans.length > 1 &&
+                                    !_aligned)
+                                  Positioned(
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 62,
+                                    child: Center(
+                                      child: DokaSwitchPlanCta(
+                                        label: '切换构图方案',
+                                        onTap: _switchNextPlan,
+                                      ),
+                                    ),
+                                  ),
+                                if (!_zoomDialOpen &&
+                                    (_analyzing || _guide != null))
+                                  Positioned(
+                                    left: 14,
+                                    bottom: 12,
+                                    child: _buildSingleZoomPill(),
+                                  ),
+                                if (!_zoomDialOpen &&
+                                    !_analyzing &&
+                                    _guide == null)
+                                  Positioned(
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 12,
+                                    child: _buildFocalPill(),
+                                  ),
+                                if (_zoomDialOpen)
+                                  Positioned(
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    child: ZoomDial(
+                                      value: _zoom,
+                                      onChanged: (value) {
+                                        _openZoomDial();
+                                        _onZoomGesture(value);
+                                      },
+                                      onPreset: (value) {
+                                        _zoomDialTimer?.cancel();
+                                        _selectZoom(_nearestZoomIndex(value));
+                                        setState(() => _zoomDialOpen = false);
+                                      },
+                                      onClose: () =>
+                                          setState(() => _zoomDialOpen = false),
+                                    ),
+                                  ),
+                                if (_guide != null && !_analyzing)
+                                  Positioned(
+                                    right: 10,
+                                    bottom: 10,
+                                    child: _buildAiFilterEntry(),
+                                  ),
+                              ],
                             ),
-                        ],
-                      ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
               ),
-              const SizedBox(height: 4),
-              _buildDokaOptionRow(),
+              SizedBox(
+                height: 48,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 180),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: ScaleTransition(
+                      scale: Tween<double>(
+                        begin: 0.94,
+                        end: 1,
+                      ).animate(animation),
+                      child: child,
+                    ),
+                  ),
+                  child: KeyedSubtree(
+                    key: ValueKey(_analyzing || _guide != null),
+                    child: _buildDokaOptionRow(),
+                  ),
+                ),
+              ),
               _buildDokaFunctionRow(),
-              const Spacer(),
-              _buildDokaTabBar(),
-              const SizedBox(height: 16),
+              const SizedBox(height: 70),
             ],
           );
         },
@@ -1356,136 +1519,111 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
+  void _switchNextPlan() {
+    if (_currentPlans.length < 2) return;
+    setState(() {
+      _planIndex = (_planIndex + 1) % _currentPlans.length;
+      _aligned = false;
+      _alignProgress = 0.12;
+    });
+    _showPrompt('构图方案 ${_planIndex + 1}', '跟随引导线对准新的目标环', 1600);
+    if (!_live && _status == CameraStatus.demo) _startCommandCycle();
+  }
+
   // ---------------------------------------------------------------- header
 
-  /// Doka 顶栏只有左上「主体选择」和右上「设置」，没有品牌字和三个工具图标。
+  /// Doka 顶栏只有左上 `ivLivePhotoToggle` 48×48 与右上 `ivSetting` 48×48，
+  /// 都是 24dp 白色图标 + 12dp 内边距，没有玻璃圆底、品牌字或动作 chip。
   Widget _buildTopBar() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
       child: Row(
         children: [
-          _glassTopButton(
-            CameraPrefs.instance.livePhoto
-                ? Icons.motion_photos_on
-                : Icons.motion_photos_off,
-            () {
-              setState(
-                () => CameraPrefs.instance.livePhoto =
-                    !CameraPrefs.instance.livePhoto,
-              );
-              _showPrompt(
-                CameraPrefs.instance.livePhoto ? '实况照片已开启' : '实况照片已关闭',
-                CameraPrefs.instance.livePhoto
-                    ? '快门前会同时录制 1.5 秒动态'
-                    : '下一张只保存静态照片',
-                1800,
-              );
-            },
-            tooltip: '实况照片',
-            active: CameraPrefs.instance.livePhoto,
+          SizedBox(
+            width: 48,
+            height: 48,
+            child: GestureDetector(
+              onTap: () {
+                setState(
+                  () => CameraPrefs.instance.livePhoto =
+                      !CameraPrefs.instance.livePhoto,
+                );
+                _showPrompt(
+                  CameraPrefs.instance.livePhoto ? '实况照片已开启' : '实况照片已关闭',
+                  CameraPrefs.instance.livePhoto
+                      ? '快门前会同时录制 1.5 秒动态'
+                      : '下一张只保存静态照片',
+                  1800,
+                );
+              },
+              behavior: HitTestBehavior.opaque,
+              child: Center(
+                child: CustomPaint(
+                  size: const Size(24, 24),
+                  painter: _LivePhotoGlyph(on: CameraPrefs.instance.livePhoto),
+                ),
+              ),
+            ),
           ),
-          if (_actionLabel != null) ...[
-            const SizedBox(width: 8),
-            _buildActionChip(),
-          ],
           const Spacer(),
-          _glassTopButton(
-            Icons.settings_outlined,
-            _openSettings,
-            tooltip: '设置',
+          SizedBox(
+            width: 48,
+            height: 48,
+            child: GestureDetector(
+              onTap: _openSettings,
+              behavior: HitTestBehavior.opaque,
+              child: Center(child: _dokaAssetIcon('ic_setting', size: 24)),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildActionChip() {
-    return IgnorePointer(
-      child: Container(
-        height: 28,
-        padding: const EdgeInsets.symmetric(horizontal: 9),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.28),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: PrimeColor.white12, width: 0.8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.accessibility_new_rounded,
-              size: 13,
-              color: Color(0xFF7ECFC8),
-            ),
-            const SizedBox(width: 5),
-            Text(
-              '动作 · $_actionLabel',
-              style: const TextStyle(
-                fontSize: 10,
-                height: 1,
-                color: PrimeColor.white70,
-                fontWeight: FontWeight.w500,
+  Widget _dokaAssetIcon(
+    String name, {
+    double size = 24,
+    double opacity = 1.0,
+    bool tintWhite = true,
+  }) {
+    final image = Image.asset(
+      'assets/doka/$name.png',
+      width: size,
+      height: size,
+      fit: BoxFit.contain,
+      filterQuality: FilterQuality.high,
+      errorBuilder: (_, _, _) => SizedBox(width: size, height: size),
+    );
+    return Opacity(
+      opacity: opacity,
+      child: tintWhite
+          ? ColorFiltered(
+              colorFilter: const ColorFilter.mode(
+                Colors.white,
+                BlendMode.srcIn,
               ),
-            ),
-            if (_actionConfidence > 0.6) ...[
-              const SizedBox(width: 5),
-              Container(
-                width: 4,
-                height: 4,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF7ECFC8),
-                  shape: BoxShape.circle,
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
+              child: image,
+            )
+          : image,
     );
   }
 
-  Widget _glassTopButton(
-    IconData icon,
-    VoidCallback onTap, {
-    String? tooltip,
-    bool active = false,
-  }) {
-    final button = GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: active
-              ? PrimeColor.white24
-              : Colors.black.withValues(alpha: 0.10),
-          border: Border.all(color: PrimeColor.white12, width: 0.8),
-        ),
-        alignment: Alignment.center,
-        child: Icon(icon, size: 21, color: PrimeColor.white70),
-      ),
-    );
-    return tooltip == null ? button : Tooltip(message: tooltip, child: button);
-  }
   // ----------------------------------------------------------------- stage
 
   Widget _buildStage() {
     return LayoutBuilder(
       builder: (context, constraints) {
         final viewport = Size(constraints.maxWidth, constraints.maxHeight);
-        final previewRect = _coverRect(viewport, const Size(1080, 1920));
+        final focusRect = _coverRect(viewport, const Size(1080, 1920));
+        final previewRect = Offset.zero & viewport;
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapUp: (details) {
             final x =
-                ((details.localPosition.dx - previewRect.left) /
-                        previewRect.width)
+                ((details.localPosition.dx - focusRect.left) / focusRect.width)
                     .clamp(0.0, 1.0);
             final y =
-                ((details.localPosition.dy - previewRect.top) /
-                        previewRect.height)
+                ((details.localPosition.dy - focusRect.top) / focusRect.height)
                     .clamp(0.0, 1.0);
             _camera.focusAt(x, y);
             if (CameraPrefs.instance.touchShot) {
@@ -1523,7 +1661,10 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
           },
           onDoubleTap: () {
             if (_lockedSubjectBox == null) return;
-            setState(() => _lockedSubjectBox = null);
+            setState(() {
+              _lockedSubjectBox = null;
+              _subjectHintVisible = false;
+            });
             _showPrompt('已解除主体锁定', 'AI 会重新判断画面主体', 1600);
           },
           onLongPressStart: (details) {
@@ -1545,48 +1686,58 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 w,
                 h,
               ];
+              _subjectHintVisible = true;
             });
-            _showPrompt('主体已锁定', 'AI 会优先分析框内的人或物；长按可重新框选，双击解除', 2200);
+            _showPrompt('已指定为本次 AI 构图主体', '拖动四角可调整范围，双击解除', 2200);
+            _subjectHintTimer?.cancel();
+            _subjectHintTimer = Timer(const Duration(seconds: 5), () {
+              if (mounted) setState(() => _subjectHintVisible = false);
+            });
           },
           child: Stack(
             fit: StackFit.expand,
             children: [
               _buildPreview(),
-              IgnorePointer(
-                child: CustomPaint(painter: _ViewfinderGradePainter()),
-              ),
-              IgnorePointer(
-                child: GuideOverlay(
+              if (_analyzing || _guide != null || _lockedSubjectBox != null)
+                GuideOverlay(
                   subjectBox:
-                      _lockedSubjectBox ?? _guide?.subjectBox ?? const [],
-                  targetBox: (_guide?.targetBox.isNotEmpty ?? false)
-                      ? _guide!.targetBox
-                      : _scene.defaultTargetBox,
+                      _lockedSubjectBox ??
+                      (_guide?.subjectBox.length == 4
+                          ? _toPreviewBox(_guide!.subjectBox)
+                          : const []),
+                  targetBox: _serverCrop != null
+                      ? _toPreviewBox(_serverCrop!)
+                      : ((_guide?.targetBox.isNotEmpty ?? false)
+                            ? _guide!.targetBox
+                            : _planTargetBox(_activePlan)),
                   aligned: _aligned,
                   analyzing: _analyzing,
+                  showMapping: _guide != null,
                   showGrid: _gridOn,
                   frameRect: previewRect,
-                  alignedBox: _serverCrop,
+                  alignedBox: _serverCrop != null
+                      ? _toPreviewBox(_serverCrop!)
+                      : null,
+                  confidence: _guide?.progress ?? _alignProgress,
                   subjectLabel: _lockedSubjectBox != null
                       ? '已锁定主体'
                       : _subjectLabel == '主体'
                       ? '拍照主体'
                       : '拍照主体 · $_subjectLabel',
                 ),
-              ),
-              if (CameraPrefs.instance.level)
-                IgnorePointer(
-                  child: CustomPaint(
-                    painter: _LevelPainter(roll: _lastRoll, pitch: _lastPitch),
-                  ),
-                ),
               if (_lockedSubjectBox != null)
                 Positioned.fill(
                   child: SubjectBoxEditor(
                     box: _lockedSubjectBox!,
                     frameRect: previewRect,
-                    onChanged: (box) => setState(() => _lockedSubjectBox = box),
-                    onClear: () => setState(() => _lockedSubjectBox = null),
+                    onChanged: (box) => setState(() {
+                      _lockedSubjectBox = box;
+                      _subjectHintVisible = true;
+                    }),
+                    onClear: () => setState(() {
+                      _lockedSubjectBox = null;
+                      _subjectHintVisible = false;
+                    }),
                   ),
                 ),
               if (_showExposure)
@@ -1600,6 +1751,17 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         );
       },
     );
+  }
+
+  List<double> _planTargetBox(_ShotPlan plan) {
+    final h = plan.targetHeight.clamp(0.16, 0.80);
+    final w = math.min(0.56, h * 0.78);
+    return [
+      (plan.targetCenterX - w / 2).clamp(0.02, 0.98 - w),
+      (plan.targetCenterY - h / 2).clamp(0.02, 0.98 - h),
+      w,
+      h,
+    ];
   }
 
   Rect _coverRect(Size viewport, Size source) {
@@ -1693,64 +1855,27 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     }
   }
 
-  /// 顶部阶段性小提示：出现 2–3 秒后自动消失，不占常驻版面。
-  Widget _buildPromptChip() {
-    final title = _promptTitle ?? '';
-    final subtitle = _promptSubtitle;
-    return IgnorePointer(
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(999),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(12, 9, 14, 9),
-              decoration: BoxDecoration(
-                color: const Color(0xE60A0A0A),
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: PrimeColor.white12, width: 0.8),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const _SparkleMark(size: 14, color: PrimeColor.white70),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            height: 1.1,
-                            color: PrimeColor.white,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        if (subtitle != null) ...[
-                          const SizedBox(height: 3),
-                          Text(
-                            subtitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: PrimeType.caption.copyWith(
-                              color: PrimeColor.white54,
-                              fontSize: 10,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+  /// Doka `tvSingleZoomRatio`：36dp 白色 iOS 小圆，黑色 12sp 粗体，
+  /// 只在 AI 构图态出现，替代底部的多档倍率胶囊。
+  Widget _buildSingleZoomPill() {
+    final label = _zoom < 10
+        ? '${_zoom.toStringAsFixed(1)}x'
+        : '${_zoom.toStringAsFixed(0)}x';
+    return Container(
+      width: 36,
+      height: 36,
+      alignment: Alignment.center,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Color(0xFF333333),
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          height: 1,
         ),
       ),
     );
@@ -1762,12 +1887,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       behavior: HitTestBehavior.opaque,
       child: Center(
         child: Container(
-          height: 38,
+          height: 40,
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
-            color: const Color(0x99000000),
+            color: const Color(0xB3000000),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: PrimeColor.white12, width: 0.8),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -1816,148 +1940,89 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildAiRecommendationChip() {
-    return GestureDetector(
-      onTap: () {
-        setState(() => _filterId = _recommendedFilterId);
-        _showPrompt('AI 推荐 · $_recommendedFilterName', '已套用到取景与下一张照片', 1800);
-      },
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(9, 5, 10, 5),
-        decoration: BoxDecoration(
-          color: const Color(0xE60A0A0A),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(
-            color: const Color(0xFF7ECFC8).withValues(alpha: 0.55),
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const _SparkleMark(size: 10, color: Color(0xFF7ECFC8)),
-            const SizedBox(width: 5),
-            Text(
-              'AI 推荐 $_recommendedFilterName',
-              style: const TextStyle(fontSize: 9, color: PrimeColor.white70),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildAiFilterEntry() {
     return GestureDetector(
       onTap: _openFilterSheet,
       behavior: HitTestBehavior.opaque,
       child: Container(
-        width: 40,
-        height: 40,
+        width: 44,
+        height: 44,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: Colors.black.withValues(alpha: 0.32),
-          border: Border.all(color: PrimeColor.white24, width: 0.8),
+          color: const Color(0x66000000),
+          border: Border.all(color: const Color(0x33FFFFFF), width: 1),
         ),
         alignment: Alignment.center,
-        child: const _SparkleMark(size: 18, color: PrimeColor.white70),
+        child: _dokaAssetIcon('ic_ai_filter_recom', size: 24, tintWhite: false),
       ),
     );
   }
 
   // --------------------------------------------------------------- controls
 
+  /// Doka `cameraOptionFixed`：48dp 高、左右 20dp、5 个 24dp 图标。
+  /// 分析时只保留多景别/比例，中间换成扫描状态；对齐后不改成 3 图标布局。
   Widget _buildDokaOptionRow() {
-    final composing = _guide != null && !_analyzing;
+    // Doka 的固定选项行是 5 个等宽图标：# / 主体 / 3:4 / 前后摄 / 调色盘。
+    // AI 构图态收起为主体、比例、前后摄 3 个，和 1.3.20 截图一致。
+    if (_analyzing || _guide != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: SizedBox(
+          height: 48,
+          child: Row(
+            children: [
+              Expanded(child: Center(child: _multiComposeOption())),
+              Expanded(child: Center(child: _ratioOption())),
+              Expanded(child: Center(child: _flipOption())),
+            ],
+          ),
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: SizedBox(
         height: 48,
-        child: composing
-            ? Row(
-                children: [
-                  SizedBox(
-                    width: 70,
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: _multiComposeOption(),
-                    ),
-                  ),
-                  Expanded(child: Center(child: _buildSwitchPlanCapsule())),
-                  SizedBox(
-                    width: 70,
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: _ratioOption(),
-                    ),
-                  ),
-                ],
-              )
-            : Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _multiComposeOption(),
-                  _subjectOption(),
-                  _paletteOption(),
-                  _ratioOption(),
-                  _flipOption(),
-                ],
-              ),
-      ),
-    );
-  }
-
-  Widget _multiComposeOption() {
-    return GestureDetector(
-      onTap: _openPlanSheet,
-      behavior: HitTestBehavior.opaque,
-      child: SizedBox(
-        width: 48,
-        height: 48,
-        child: Stack(
-          clipBehavior: Clip.none,
+        child: Row(
           children: [
-            const Align(
-              child: Icon(
-                Icons.auto_awesome_mosaic_outlined,
-                size: 24,
-                color: PrimeColor.white38,
-              ),
-            ),
-            Positioned(
-              top: 2,
-              right: -10,
-              child: Container(
-                height: 12,
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                decoration: BoxDecoration(
-                  color: PrimeColor.white12,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: PrimeColor.white12, width: 0.6),
-                ),
-                alignment: Alignment.center,
-                child: const Text(
-                  'Beta',
-                  style: TextStyle(fontSize: 7, color: PrimeColor.white70),
-                ),
-              ),
-            ),
+            Expanded(child: Center(child: _multiComposeOption())),
+            Expanded(child: Center(child: _subjectOption())),
+            Expanded(child: Center(child: _ratioOption())),
+            Expanded(child: Center(child: _flipOption())),
+            Expanded(child: Center(child: _paletteOption())),
           ],
         ),
       ),
     );
   }
 
-  Widget _subjectOption() {
+  Widget _multiComposeOption() {
     return GestureDetector(
-      onTap: _startAi,
+      key: const ValueKey('plan-button'),
+      onTap: _openPlanSheet,
       behavior: HitTestBehavior.opaque,
-      child: const SizedBox(
+      child: SizedBox(
         width: 48,
         height: 48,
-        child: Icon(
-          Icons.center_focus_weak_rounded,
-          size: 24,
-          color: PrimeColor.white70,
+        child: Center(child: _dokaAssetIcon('ic_multi_compose', size: 24)),
+      ),
+    );
+  }
+
+  Widget _subjectOption() {
+    return GestureDetector(
+      onTap: _beginSubjectSelection,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 48,
+        height: 48,
+        child: Center(
+          child: _dokaAssetIcon(
+            'ic_subject_selection',
+            size: 24,
+            opacity: _lockedSubjectBox == null ? 0.72 : 1.0,
+          ),
         ),
       ),
     );
@@ -1971,13 +2036,25 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       child: SizedBox(
         width: 48,
         height: 48,
-        child: Icon(
-          Icons.tune_rounded,
-          size: 24,
-          color: active ? const Color(0xFF80EEFF) : PrimeColor.white70,
+        child: Center(
+          child: _dokaAssetIcon(
+            'ic_palette',
+            size: 26,
+            opacity: active ? 1.0 : 0.72,
+          ),
         ),
       ),
     );
+  }
+
+  void _beginSubjectSelection() {
+    setState(() => _subjectHintVisible = true);
+    _subjectHintTimer?.cancel();
+    _subjectHintTimer = Timer(const Duration(seconds: 6), () {
+      if (mounted) setState(() => _subjectHintVisible = false);
+    });
+    if (!_analyzing && _live) _startAi();
+    _showPrompt('指定 AI 构图主体', '长按取景框里的人或物，出现黄色四角框即为锁定', 2200);
   }
 
   void _openPalette() {
@@ -1997,26 +2074,7 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       child: SizedBox(
         width: 48,
         height: 48,
-        child: Center(
-          child: Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(5),
-              border: Border.all(color: PrimeColor.white54, width: 1),
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              _ratio.label,
-              style: const TextStyle(
-                fontSize: 8,
-                height: 1,
-                color: PrimeColor.white70,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ),
+        child: Center(child: _dokaAssetIcon('ic_ratio_3_4', size: 24)),
       ),
     );
   }
@@ -2025,110 +2083,66 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     return GestureDetector(
       onTap: _switchCamera,
       behavior: HitTestBehavior.opaque,
-      child: const SizedBox(
+      child: SizedBox(
         width: 48,
         height: 48,
-        child: Icon(
-          Icons.cameraswitch_outlined,
-          size: 24,
-          color: PrimeColor.white70,
-        ),
+        child: Center(child: _dokaAssetIcon('ic_switch', size: 24)),
       ),
     );
   }
 
-  Widget _buildSwitchPlanCapsule() {
-    return GestureDetector(
-      key: const ValueKey('plan-button'),
-      onTap: _openPlanSheet,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        height: 36,
-        padding: const EdgeInsets.all(1),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(18),
-          gradient: const LinearGradient(
-            colors: [
-              Color(0xFFE8FFFC),
-              Color(0xFFB1CFFF),
-              Color(0xFFFFD2F6),
-              Color(0xFFFFC38F),
-            ],
-            begin: Alignment.centerLeft,
-            end: Alignment.centerRight,
-          ),
-        ),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          decoration: BoxDecoration(
-            color: const Color(0xE612161C),
-            borderRadius: BorderRadius.circular(17),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.crop_free_rounded,
-                size: 14,
-                color: Color(0xFFFFD2F6),
+  /// Doka `cameraFunction`：96dp 高、左右 10dp、底部 12dp；
+  /// 滤镜 60、快门 70、AI 扫描切换 60，分布在 25% / 50% / 75%。
+  Widget _buildDokaFunctionRow() {
+    final composing = _analyzing || _guide != null;
+    return Container(
+      height: 96,
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Center(
+              child: GestureDetector(
+                onTap: _openFilterSheet,
+                behavior: HitTestBehavior.opaque,
+                child: _buildFilterThumb(),
               ),
-              const SizedBox(width: 7),
-              Text(
-                '切换构图方案',
-                style: PrimeType.caption.copyWith(
-                  color: PrimeColor.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
+            ),
+          ),
+          Expanded(child: Center(child: _buildShutterButton())),
+          Expanded(
+            child: Center(
+              child: GestureDetector(
+                key: const ValueKey('ai-compose'),
+                onTap: _analyzing || composing ? _exitCompose : _startAi,
+                behavior: HitTestBehavior.opaque,
+                child: SizedBox(
+                  width: 60,
+                  height: 64,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _dokaAssetIcon(
+                        composing ? 'ic_close' : 'ic_ai_scan',
+                        size: 28,
+                      ),
+                      if (composing) ...[
+                        const SizedBox(height: 5),
+                        const Text(
+                          '取消',
+                          style: TextStyle(
+                            fontSize: 11,
+                            height: 1,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
               ),
-              const SizedBox(width: 4),
-              const Icon(
-                Icons.keyboard_arrow_down_rounded,
-                size: 16,
-                color: PrimeColor.white54,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDokaFunctionRow() {
-    return SizedBox(
-      height: 96,
-      child: Stack(
-        children: [
-          Positioned(
-            left: 12,
-            top: 10,
-            child: _functionAction(
-              icon: Icons.camera_alt_outlined,
-              label: '相机滤镜',
-              onTap: _openFilterSheet,
-            ),
-          ),
-          Align(
-            alignment: Alignment.center,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [_buildShutterButton()],
-            ),
-          ),
-          Positioned(
-            right: 12,
-            top: 10,
-            child: _functionAction(
-              icon: _composeEnabled && _guide != null && !_analyzing
-                  ? Icons.close_rounded
-                  : Icons.auto_awesome,
-              label: _analyzing
-                  ? '分析中'
-                  : (_composeEnabled && _guide != null ? '退出构图' : 'AI 构图'),
-              onTap: _composeEnabled && _guide != null && !_analyzing
-                  ? _exitCompose
-                  : _startAi,
-              active: _analyzing || (_composeEnabled && _guide != null),
             ),
           ),
         ],
@@ -2136,34 +2150,53 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _functionAction({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-    bool active = false,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: SizedBox(
-        width: 66,
-        height: 64,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+  /// Doka `cameraFilter` 的 60dp 滤镜缩略图：当前滤镜渲染后的小图 +
+  /// 左上角两行白色滤镜名，不再是单独的“无滤镜”相机图标。
+  Widget _buildFilterThumb() {
+    final name = _activeFilter.id == 'none' ? '原片' : _activeFilter.name;
+    final words = name.replaceAll(' ', '\n');
+    return SizedBox(
+      width: 58,
+      height: 74,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            Icon(
-              icon,
-              size: 32,
-              color: active ? PrimeColor.white : PrimeColor.white70,
+            ColorFiltered(
+              colorFilter: _activeFilter.colorFilter,
+              child: Image.asset('assets/demo/scene.jpg', fit: BoxFit.cover),
             ),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                height: 1,
-                color: active ? PrimeColor.white : PrimeColor.white70,
-                fontWeight: FontWeight.w500,
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(5, 14, 5, 4),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Colors.transparent, Color(0xCC000000)],
+                  ),
+                ),
+                child: Text(
+                  words,
+                  maxLines: 2,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 9,
+                    height: 1.05,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ),
+            ),
+            Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white24, width: 0.5),
               ),
             ),
           ],
@@ -2181,130 +2214,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
         scale: _capturing ? 0.93 : 1.0,
         duration: const Duration(milliseconds: 120),
         child: SizedBox(
-          width: 76,
-          height: 76,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              CustomPaint(
-                size: const Size(76, 76),
-                painter: _ShutterProgressPainter(
-                  progress: _alignProgress,
-                  aligned: _aligned,
-                ),
-              ),
-              Container(
-                width: 72,
-                height: 72,
-                padding: const EdgeInsets.all(2.5),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: const SweepGradient(
-                    colors: [
-                      Color(0xFFE8FFFC),
-                      Color(0xFF80EEFF),
-                      Color(0xFFB1CFFF),
-                      Color(0xFFFFD2F6),
-                      Color(0xFFFFC38F),
-                      Color(0xFFE8FFFC),
-                    ],
-                  ),
-                  boxShadow: _aligned
-                      ? [
-                          BoxShadow(
-                            color: const Color(0xFFFFD2F6)
-                                .withValues(alpha: 0.24),
-                            blurRadius: 22,
-                            spreadRadius: 2,
-                          ),
-                        ]
-                      : null,
-                ),
-                child: ClipOval(
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Image.asset(
-                        'assets/ai/liuxiaoying_face.png',
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) =>
-                            const ColoredBox(color: Color(0xFF17171A)),
-                      ),
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 5,
-                        child: Text(
-                          '流小萤',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 7.5,
-                            height: 1,
-                            color: Colors.white.withValues(alpha: 0.92),
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.6,
-                            shadows: const [
-                              Shadow(
-                                color: Color(0xCC000000),
-                                blurRadius: 4,
-                                offset: Offset(0, 1),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDokaTabBar() {
-    return Center(
-      child: Container(
-        width: 310,
-        height: 52,
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.28),
-          borderRadius: BorderRadius.circular(26),
-          border: Border.all(color: PrimeColor.white12, width: 0.8),
-        ),
-        child: Row(
-          children: [
-            Expanded(child: _tabItem('相机', active: true)),
-            Expanded(child: _tabItem('相册', onTap: _openGallery)),
-            Expanded(child: _tabItem('我的', onTap: _openMine)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _tabItem(String label, {bool active = false, VoidCallback? onTap}) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        height: 44,
-        decoration: BoxDecoration(
-          color: active ? PrimeColor.white12 : Colors.transparent,
-          borderRadius: BorderRadius.circular(22),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 14,
-            height: 1,
-            color: active ? PrimeColor.white : const Color(0xFFBFBFBF),
-            fontWeight: FontWeight.w600,
-          ),
+          width: 70,
+          height: 70,
+          child: Center(child: _dokaAssetIcon('ic_capture', size: 64)),
         ),
       ),
     );
@@ -2416,437 +2328,6 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
 /// Doka 式“距离导演”卡：不是泛泛一句“走近一点”，而是给出约数、
 /// 最近/最远建议距离，并让用户按「开始构图」进入对位。
-class _DistanceCard extends StatelessWidget {
-  const _DistanceCard({
-    required this.guide,
-    required this.plan,
-    required this.scene,
-    required this.onStart,
-    required this.onClose,
-  });
-
-  final ComposeResult guide;
-  final _ShotPlan plan;
-  final SceneMode scene;
-  final VoidCallback onStart;
-  final VoidCallback onClose;
-
-  double get _distance => guide.distanceMeters ?? plan.recommendedDistance;
-  double get _recommended =>
-      guide.recommendedDistance ??
-      (plan.recommendedDistance > 0 ? plan.recommendedDistance : _distance);
-  double get _near => guide.nearDistance ?? math.max(0.4, _recommended - 0.45);
-  double get _far => guide.farDistance ?? _recommended + 0.75;
-
-  bool get _isPortrait => scene == SceneMode.portrait;
-
-  String get _title {
-    if (!_isPortrait || _recommended <= 0) return '把主体放进目标环';
-    if (_distance < _recommended - 0.55) return '再退一点';
-    if (_distance > _recommended + 0.75) return '再近一点';
-    return '距离合适';
-  }
-
-  String get _subtitle {
-    if (!_isPortrait || _recommended <= 0) {
-      return '约 ${_distance.toStringAsFixed(1)} 米 · 跟着黄色主体框微移';
-    }
-    if (_distance < _recommended - 0.55) {
-      return '约 ${_distance.toStringAsFixed(1)} 米 · 可继续后退，人物会更完整';
-    }
-    if (_distance > _recommended + 0.75) {
-      return '约 ${_distance.toStringAsFixed(1)} 米 · 再靠近，人物会更突出';
-    }
-    return '约 ${_distance.toStringAsFixed(1)} 米 · 位置刚好，按开始构图锁定';
-  }
-
-  bool get _good => _isPortrait && (_distance - _recommended).abs() <= 0.65;
-
-  @override
-  Widget build(BuildContext context) {
-    final progress = ((_distance - _near) / math.max(0.01, _far - _near)).clamp(
-      0.05,
-      0.95,
-    );
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(22),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
-          decoration: BoxDecoration(
-            color: const Color(0xF20C0C0E),
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: PrimeColor.white12, width: 0.8),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x66000000),
-                blurRadius: 24,
-                offset: Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const _AiAvatar(size: 42),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          '流小萤 · 构图导演',
-                          style: TextStyle(
-                            fontSize: 11,
-                            height: 1,
-                            color: PrimeColor.white54,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.8,
-                          ),
-                        ),
-                        const SizedBox(height: 5),
-                        Text(
-                          _title,
-                          style: const TextStyle(
-                            fontSize: 19,
-                            height: 1.05,
-                            color: PrimeColor.white,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  _statusPill(),
-                  GestureDetector(
-                    onTap: onClose,
-                    behavior: HitTestBehavior.opaque,
-                    child: const Padding(
-                      padding: EdgeInsets.only(left: 8, top: 2, bottom: 2),
-                      child: Icon(
-                        Icons.close_rounded,
-                        size: 16,
-                        color: PrimeColor.white38,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 7),
-              Text(
-                _subtitle,
-                maxLines: 2,
-                style: const TextStyle(
-                  fontSize: 13,
-                  height: 1.45,
-                  color: PrimeColor.white54,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      '最近建议距离\n人物更突出',
-                      style: TextStyle(
-                        fontSize: 11,
-                        height: 1.35,
-                        color: PrimeColor.white38,
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: Text(
-                      '最远建议距离\n环境更完整',
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        height: 1.35,
-                        color: PrimeColor.white38,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              SizedBox(
-                height: 18,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final width = constraints.maxWidth;
-                    final x = width * progress;
-                    return Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        Positioned(
-                          left: 0,
-                          right: 0,
-                          top: 8,
-                          child: Container(
-                            height: 2,
-                            color: PrimeColor.white24,
-                          ),
-                        ),
-                        Positioned(
-                          left: 0,
-                          top: 8,
-                          width: x,
-                          child: Container(height: 2, color: PrimeColor.white),
-                        ),
-                        Positioned(
-                          left: x - 5,
-                          top: 2,
-                          child: const Icon(
-                            Icons.arrow_drop_down_rounded,
-                            size: 18,
-                            color: PrimeColor.white,
-                          ),
-                        ),
-                        const Positioned(left: 0, top: 5, child: _TickMark()),
-                        const Positioned(right: 0, top: 5, child: _TickMark()),
-                      ],
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 10),
-              GestureDetector(
-                onTap: onStart,
-                behavior: HitTestBehavior.opaque,
-                child: Container(
-                  height: 44,
-                  width: double.infinity,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF4F1F6),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: const Text(
-                    '开始构图',
-                    style: TextStyle(
-                      fontSize: 15,
-                      color: Color(0xFF3A3540),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _statusPill() {
-    final good = _good;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-      decoration: BoxDecoration(
-        color: good ? const Color(0xFF14351F) : const Color(0xFF2A2313),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            good ? Icons.check_rounded : Icons.arrow_upward_rounded,
-            size: 13,
-            color: good ? const Color(0xFF8BE0A6) : const Color(0xFFFFD76A),
-          ),
-          const SizedBox(width: 4),
-          Text(
-            good ? '距离合适' : '继续调整',
-            style: TextStyle(
-              fontSize: 11,
-              color: good ? const Color(0xFF8BE0A6) : const Color(0xFFFFD76A),
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _TickMark extends StatelessWidget {
-  const _TickMark();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(width: 2, height: 8, color: PrimeColor.white38);
-  }
-}
-
-class _AiAvatar extends StatelessWidget {
-  const _AiAvatar({required this.size});
-
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      padding: const EdgeInsets.all(2),
-      decoration: const BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: SweepGradient(
-          colors: [
-            Color(0xFF80EEFF),
-            Color(0xFFB1CFFF),
-            Color(0xFFFFD2F6),
-            Color(0xFFFFC38F),
-            Color(0xFF80EEFF),
-          ],
-        ),
-      ),
-      child: ClipOval(
-        child: Image.asset(
-          'assets/ai/liuxiaoying_face.png',
-          width: size - 4,
-          height: size - 4,
-          fit: BoxFit.cover,
-          errorBuilder: (_, _, _) => Container(
-            color: const Color(0xFF111114),
-            alignment: Alignment.center,
-            child: const _SparkleMark(size: 16, color: PrimeColor.white),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------- painters
-
-class _SparkleMark extends StatelessWidget {
-  const _SparkleMark({required this.size, required this.color});
-
-  final double size;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return CustomPaint(
-      size: Size.square(size),
-      painter: _SparklePainter(color: color),
-    );
-  }
-}
-
-class _SparklePainter extends CustomPainter {
-  _SparklePainter({required this.color});
-
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final c = size.center(Offset.zero);
-    final r = size.width / 2;
-    final path = Path()
-      ..moveTo(c.dx, c.dy - r)
-      ..quadraticBezierTo(c.dx + r * 0.17, c.dy - r * 0.17, c.dx + r, c.dy)
-      ..quadraticBezierTo(c.dx + r * 0.17, c.dy + r * 0.17, c.dx, c.dy + r)
-      ..quadraticBezierTo(c.dx - r * 0.17, c.dy + r * 0.17, c.dx - r, c.dy)
-      ..quadraticBezierTo(c.dx - r * 0.17, c.dy - r * 0.17, c.dx, c.dy - r);
-    canvas.drawPath(path, Paint()..color = color);
-  }
-
-  @override
-  bool shouldRepaint(covariant _SparklePainter oldDelegate) =>
-      oldDelegate.color != color;
-}
-
-class _ViewfinderGradePainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final top = Rect.fromLTWH(0, 0, size.width, size.height * 0.34);
-    canvas.drawRect(
-      top,
-      Paint()
-        ..shader = const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xB3000000), Color(0x00000000)],
-        ).createShader(top),
-    );
-
-    final bottom = Rect.fromLTWH(
-      0,
-      size.height * 0.58,
-      size.width,
-      size.height * 0.42,
-    );
-    canvas.drawRect(
-      bottom,
-      Paint()
-        ..shader = const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0x00000000), Color(0x99000000)],
-        ).createShader(bottom),
-    );
-
-    final rect = Offset.zero & size;
-    canvas.drawRect(
-      rect,
-      Paint()
-        ..shader = RadialGradient(
-          radius: 1.08,
-          colors: [Colors.transparent, Colors.black.withValues(alpha: 0.28)],
-          stops: const [0.52, 1.0],
-        ).createShader(rect),
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _ShutterProgressPainter extends CustomPainter {
-  _ShutterProgressPainter({required this.progress, required this.aligned});
-
-  final double progress;
-  final bool aligned;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = size.center(Offset.zero);
-    final radius = size.width / 2 - 1;
-    canvas.drawCircle(
-      center,
-      radius,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = aligned ? 1.8 : 1.2
-        ..color = aligned ? PrimeColor.white70 : PrimeColor.white24,
-    );
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius - 4),
-      -math.pi / 2,
-      math.pi * 2 * progress.clamp(0.0, 1.0),
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4
-        ..strokeCap = StrokeCap.round
-        ..color = aligned ? PrimeColor.white : PrimeColor.white54,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _ShutterProgressPainter oldDelegate) =>
-      oldDelegate.progress != progress || oldDelegate.aligned != aligned;
-}
-
-// ---------------------------------------------------------------- sheets
-
-/// Doka 式滤镜托盘：横向缩略图，选中项用白框和白色文字。
 class _FilterSheet extends StatefulWidget {
   const _FilterSheet({
     required this.selected,
@@ -3404,7 +2885,10 @@ class _RatioSheet extends StatelessWidget {
                           children: [
                             SizedBox(
                               width: 32,
-                              height: (32 * ratio.heightOverWidth).clamp(18, 48),
+                              height: (32 * ratio.heightOverWidth).clamp(
+                                18,
+                                48,
+                              ),
                               child: DecoratedBox(
                                 decoration: BoxDecoration(
                                   borderRadius: BorderRadius.circular(3),
@@ -3504,50 +2988,41 @@ class _ExposureBar extends StatelessWidget {
   }
 }
 
-class _LevelPainter extends CustomPainter {
-  _LevelPainter({required this.roll, required this.pitch});
+/// Doka `selector_camera_live_photo` 的白点环实况图标。
+class _LivePhotoGlyph extends CustomPainter {
+  const _LivePhotoGlyph({required this.on});
 
-  final double roll;
-  final double pitch;
+  final bool on;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final line = Paint()
-      ..color = const Color(0x99FFFFFF)
-      ..strokeWidth = 1.0;
-    final angle = (roll.clamp(-1.0, 1.0)) * 0.18;
-    final half = size.width * 0.16;
-    final dx = math.cos(angle) * half;
-    final dy = math.sin(angle) * half;
-    canvas.drawLine(center.translate(-dx, -dy), center.translate(dx, dy), line);
-    canvas.drawCircle(center, 2.2, Paint()..color = const Color(0xCC7ECFC8));
-
-    final bubble = center.translate(
-      (pitch.clamp(-1.0, 1.0)) * size.width * 0.12,
-      0,
-    );
-    canvas.drawCircle(
-      bubble,
-      4.0,
-      Paint()
-        ..color = const Color(0xCCFFFFFF)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.0,
-    );
-    final label = TextPainter(
-      text: TextSpan(
-        text: (roll.abs() < 0.02
-            ? '水平'
-            : 'ROLL ${(roll * 18).toStringAsFixed(0)}°'),
-        style: const TextStyle(fontSize: 9, color: Color(0x99FFFFFF)),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    label.paint(canvas, center.translate(-label.width / 2, 12));
+    final c = size.center(Offset.zero);
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: on ? 0.95 : 0.62)
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    final dot = Paint()
+      ..color = Colors.white.withValues(alpha: on ? 0.95 : 0.62);
+    const count = 30;
+    final radius = size.width * 0.43;
+    for (var i = 0; i < count; i++) {
+      final a = i * math.pi * 2 / count;
+      canvas.drawCircle(
+        c + Offset(math.cos(a), math.sin(a)) * radius,
+        0.85,
+        dot,
+      );
+    }
+    canvas.drawCircle(c, size.width * 0.22, paint..strokeWidth = 2.2);
+    if (!on) {
+      final slash = Paint()
+        ..color = Colors.white.withValues(alpha: 0.85)
+        ..strokeWidth = 1.8
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(c + const Offset(-6, 6), c + const Offset(6, -6), slash);
+    }
   }
 
   @override
-  bool shouldRepaint(covariant _LevelPainter old) =>
-      old.roll != roll || old.pitch != pitch;
+  bool shouldRepaint(covariant _LivePhotoGlyph old) => old.on != on;
 }

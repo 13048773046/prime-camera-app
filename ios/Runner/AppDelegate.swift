@@ -42,6 +42,11 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private var lastPoseAt: CFTimeInterval = 0
   private var lastAction: String?
   private var lastActionConfidence: Double = 0
+  /// Doka 的主体跟踪不是每帧重新挑“最大的人”，而是把上一帧主体作为
+  /// 强先验，再在同画面里按 IoU / 中心距离续选，避免多人时来回跳。
+  private var lastSubjectBox: CGRect?
+  private var lastSubjectAt: CFTimeInterval = 0
+  private var lastSubjectCandidateCount = 0
   private let motionManager = CMMotionManager()
   private let motionLock = NSLock()
   private var rollDegrees: Double = 0
@@ -667,21 +672,40 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     // 人/脸和显著区域分开 perform。某个 request 在特定系统上失败时，
     // 不会把另一组结果一起丢掉，这是实时引导“没有反应”最常见的原因。
     var human: VNHumanObservation?
+    var humanCandidates: [VNHumanObservation] = []
     var face: VNFaceObservation?
     do {
       let humanRequest = VNDetectHumanRectanglesRequest()
       humanRequest.upperBodyOnly = false
       let faceRequest = VNDetectFaceRectanglesRequest()
       try handler.perform([humanRequest, faceRequest])
-      human = (humanRequest.results ?? []).max {
-        area(of: $0.boundingBox) < area(of: $1.boundingBox)
+      humanCandidates = (humanRequest.results ?? []).filter {
+        area(of: $0.boundingBox) > 0.018
       }
+      human = selectSubject(from: humanCandidates)
       face = (faceRequest.results ?? []).max {
         area(of: $0.boundingBox) < area(of: $1.boundingBox)
       }
     } catch {
       human = nil
+      humanCandidates = []
       face = nil
+    }
+
+    let now = CACurrentMediaTime()
+    var heldSubjectBox: CGRect?
+    if let selected = human {
+      lastSubjectBox = selected.boundingBox
+      lastSubjectAt = now
+      lastSubjectCandidateCount = humanCandidates.count
+    } else if let last = lastSubjectBox,
+              now - lastSubjectAt < 0.55,
+              lastSubjectCandidateCount > 0 {
+      // 短暂遮挡/转脸时不立刻把主体框丢掉，保持目标环连续。
+      heldSubjectBox = last
+    } else {
+      lastSubjectBox = nil
+      lastSubjectCandidateCount = 0
     }
 
     // 在人体框内继续做骨架识别：Doka 的动作提示不是只看“有没有人”，
@@ -744,9 +768,16 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     }
 
     sendGuidance(
-      box: human.map { normalizeFrame($0.boundingBox) },
+      box: (human?.boundingBox ?? heldSubjectBox).map { normalizeFrame($0) },
       face: face.map { normalizeFrame($0.boundingBox) },
       saliency: salientObject.map { normalizeFrame($0.boundingBox) },
+      candidates: humanCandidates
+        .sorted { lhs, rhs in
+          subjectScore(lhs.boundingBox, previous: lastSubjectBox) >
+            subjectScore(rhs.boundingBox, previous: lastSubjectBox)
+        }
+        .prefix(4)
+        .map { normalizeFrame($0.boundingBox) },
       roll: roll,
       pitch: pitch,
       orientedWidth: orientedWidth,
@@ -754,6 +785,46 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
       action: action,
       actionConfidence: actionConfidence
     )
+  }
+
+  /// 多人画面里选“上一帧同一个人”，而不是永远选最大/最靠中的人。
+  private func selectSubject(from candidates: [VNHumanObservation]) -> VNHumanObservation? {
+    guard !candidates.isEmpty else { return nil }
+    let previous = lastSubjectBox
+    return candidates.max {
+      subjectScore($0.boundingBox, previous: previous) <
+      subjectScore($1.boundingBox, previous: previous)
+    }
+  }
+
+  private func subjectScore(_ box: CGRect, previous: CGRect?) -> CGFloat {
+    let boxArea = min(area(of: box), 0.42)
+    let cx = box.midX
+    let cy = 1.0 - box.midY
+    // 人像主体通常在画面中下部；偏到四角的大物体不应该抢主体。
+    let centerDistance = hypot(cx - 0.5, cy - 0.53)
+    let centerScore = max(0, 1.0 - centerDistance / 0.72)
+    let edgePenalty: CGFloat = (box.minX < 0.02 || box.maxX > 0.98) ? 0.12 : 0
+    var continuity: CGFloat = 0
+    if let previous = previous {
+      continuity = iou(box, previous) * 3.2
+      let pcx = previous.midX
+      let pcy = 1.0 - previous.midY
+      let proximity = max(0, 1.0 - hypot(cx - pcx, cy - pcy) / 0.45)
+      continuity += proximity * 1.6
+    }
+    // 长宽比离谱的框（横幅/局部手臂）降权。
+    let aspect = box.width / max(box.height, 0.001)
+    let aspectPenalty = aspect > 1.15 ? 0.22 : 0
+    return boxArea * 3.0 + centerScore * 1.25 + continuity - edgePenalty - aspectPenalty
+  }
+
+  private func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+    let intersection = a.intersection(b)
+    if intersection.isNull || intersection.isEmpty { return 0 }
+    let interArea = intersection.width * intersection.height
+    let union = area(of: a) + area(of: b) - interArea
+    return union > 0 ? interArea / union : 0
   }
 
   private func area(of rect: CGRect) -> CGFloat {
@@ -837,6 +908,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     box: [Double]?,
     face: [Double]?,
     saliency: [Double]?,
+    candidates: [[Double]],
     roll: Double,
     pitch: Double,
     orientedWidth: Int,
@@ -862,6 +934,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
     if let box = box { payload["box"] = box }
     if let face = face { payload["face"] = face }
     if let saliency = saliency { payload["saliency"] = saliency }
+    if !candidates.isEmpty { payload["candidates"] = candidates }
     if let action = action {
       payload["action"] = action
       payload["actionConfidence"] = actionConfidence
@@ -874,7 +947,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   // MARK: - Zoom / lens
 
   private func applyZoom(_ zoom: CGFloat, result: @escaping FlutterResult) {
-    let requested = max(0.5, min(6.0, zoom))
+    let requested = max(0.5, min(10.0, zoom))
     sessionQueue.async { [weak self] in
       guard let self = self else { return }
       guard self.isConfigured else {
@@ -904,7 +977,7 @@ final class PrimeCameraHost: NSObject, FlutterTexture, AVCaptureVideoDataOutputS
   private func setZoomFactor(on device: AVCaptureDevice, logicalZoom: CGFloat) -> CGFloat {
     let isUltraWide = device.deviceType == .builtInUltraWideCamera
     let minFactor = max(1.0, device.minAvailableVideoZoomFactor)
-    let maxFactor = min(device.maxAvailableVideoZoomFactor, 6.0)
+    let maxFactor = min(device.maxAvailableVideoZoomFactor, 10.0)
     let desiredFactor = isUltraWide ? logicalZoom / 0.5 : logicalZoom
     var actualFactor = max(minFactor, min(maxFactor, desiredFactor))
     do {

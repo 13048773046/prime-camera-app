@@ -53,6 +53,7 @@ class GuidanceFrame {
     this.box,
     this.face,
     this.saliency,
+    this.candidates = const [],
     this.action,
     this.actionConfidence = 0,
   });
@@ -69,9 +70,37 @@ class GuidanceFrame {
   /// 非人像场景的显著主体（建筑、树、招牌、静物等）。
   final List<double>? saliency;
 
+  /// 当前帧里所有人体候选，按原生连续性评分排序；用于手动指定主体后
+  /// 在多人画面里换到离用户框最近的一个人，而不是永远跟随最大的人。
+  final List<List<double>> candidates;
+
   /// 原生 Vision 人体姿态识别出的动作：standing/walking/arms_up/...
   final String? action;
   final double actionConfidence;
+
+  GuidanceFrame copyWith({
+    List<double>? box,
+    List<double>? face,
+    List<double>? saliency,
+    List<List<double>>? candidates,
+    String? action,
+    double? actionConfidence,
+  }) {
+    return GuidanceFrame(
+      roll: roll,
+      pitch: pitch,
+      frameW: frameW,
+      frameH: frameH,
+      hfov: hfov,
+      ts: ts,
+      box: box ?? this.box,
+      face: face ?? this.face,
+      saliency: saliency ?? this.saliency,
+      candidates: candidates ?? this.candidates,
+      action: action ?? this.action,
+      actionConfidence: actionConfidence ?? this.actionConfidence,
+    );
+  }
 
   bool get hasSubject => box != null && box!.length == 4;
 
@@ -98,6 +127,16 @@ class GuidanceFrame {
       return out;
     }
 
+    List<List<double>> rects(dynamic value) {
+      if (value is! List) return const [];
+      return value
+          .map(rect)
+          .whereType<List<double>>()
+          .where((item) => item.length == 4)
+          .take(6)
+          .toList(growable: false);
+    }
+
     return GuidanceFrame(
       roll: (map['roll'] as num? ?? 0).toDouble(),
       pitch: (map['pitch'] as num? ?? 0).toDouble(),
@@ -108,6 +147,7 @@ class GuidanceFrame {
       box: rect(map['box']),
       face: rect(map['face']),
       saliency: rect(map['saliency']),
+      candidates: rects(map['candidates']),
       action: map['action']?.toString(),
       actionConfidence: (map['actionConfidence'] as num? ?? 0).toDouble(),
     );
